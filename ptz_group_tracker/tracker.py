@@ -1,107 +1,112 @@
 ﻿"""
-tracker.py - Group P-controller tracker with coast/momentum.
+tracker.py  —  Group tracker with trapezoidal velocity profile.
 
-When the group is visible: normal P-control with EMA smoothing + hysteresis.
-When the group disappears: camera keeps moving in the last direction for
-COAST_DURATION seconds (e.g. player runs off the edge -> camera chases them).
+Velocity profile:
+  |error| > SLOW_ZONE              -> full speed  1.0
+  DEADBAND < |error| <= SLOW_ZONE  -> linear ramp  PT_MIN_VEL .. 1.0
+  |error| <= DEADBAND              -> stop  0.0
+
+States:
+  TRACKING  : target visible
+  COASTING  : target gone, holding last velocity for COAST_SEC
+  SEARCHING : coast expired, motor stopped
 """
-
+import math
 import time
-import numpy as np
-from config import (
-    TARGET_FILL, GROUP_PADDING,
-    KP_PAN, KP_TILT, EMA_ALPHA,
-    DEADBAND, START_BAND, COAST_DURATION,
-)
+from config import EMA_ALPHA, DEADBAND, START_BAND, SLOW_ZONE, MAX_VEL, PT_MIN_VEL, COAST_SEC
+
+_PADDING = 0.08   # fractional padding added around the group bounding box
 
 
-class GroupTracker:
+def _vel_profile(ema):
     """
-    Stateful group P-controller with edge-coast momentum.
-
-    update(detections, frame_w, frame_h)
-        -> (pan_vel, tilt_vel, group_box)
-
-    pan_vel / tilt_vel : float [-1,+1] or None (stop).
-    group_box          : (x1,y1,x2,y2) or None.
+    Map smoothed error [-1,+1] to motor velocity [-1,+1].
+    Full (capped) speed outside SLOW_ZONE, linear ramp between SLOW_ZONE and DEADBAND.
     """
+    e = abs(ema)
+    if e < DEADBAND:
+        return 0.0
+    if e >= SLOW_ZONE:
+        return math.copysign(MAX_VEL, ema)
+    # linear ramp: DEADBAND -> PT_MIN_VEL,  SLOW_ZONE -> MAX_VEL
+    t = (e - DEADBAND) / (SLOW_ZONE - DEADBAND)
+    return math.copysign(PT_MIN_VEL + t * (MAX_VEL - PT_MIN_VEL), ema)
 
-    def __init__(self) -> None:
-        self._pan_ema     = 0.0
-        self._tilt_ema    = 0.0
-        self._pan_moving  = False
-        self._tilt_moving = False
-        self._coast_until = 0.0   # monotonic time until coast is active
 
-    def update(self, detections: dict, frame_w: int, frame_h: int) -> tuple:
-        all_boxes = list(detections["persons"])
-        if detections["ball"] is not None:
-            all_boxes.append(detections["ball"])
+class Tracker:
+    def __init__(self):
+        self._pan_ema   = 0.0
+        self._tilt_ema  = 0.0
+        self._pan_on    = False   # hysteresis state (prevents chatter at deadband edge)
+        self._tilt_on   = False
+        self._coast_end = 0.0    # monotonic time when coast expires
 
-        # ── No detections ─────────────────────────────────────────────────────
-        if not all_boxes:
-            now = time.monotonic()
-            if now < self._coast_until:
-                # Coast: keep last EMA frozen, return last velocity so the
-                # camera continues moving in the direction the target left.
-                pan_vel  = float(np.clip(KP_PAN  * self._pan_ema,  -1.0, 1.0)) if self._pan_moving  else 0.0
-                tilt_vel = float(np.clip(KP_TILT * self._tilt_ema, -1.0, 1.0)) if self._tilt_moving else 0.0
-                if pan_vel == 0.0 and tilt_vel == 0.0:
-                    return None, None, None
-                return pan_vel, tilt_vel, None
-            # Coast expired — bleed EMA to zero and stop
-            self._pan_ema  *= (1 - EMA_ALPHA)
-            self._tilt_ema *= (1 - EMA_ALPHA)
-            self._pan_moving  = False
-            self._tilt_moving = False
-            return None, None, None
+    def update(self, persons, ball, frame_w, frame_h):
+        """
+        persons : list of [x1,y1,x2,y2]
+        ball    : [x1,y1,x2,y2] or None
 
-        # ── Union bounding box ────────────────────────────────────────────────
-        x1 = min(b[0] for b in all_boxes)
-        y1 = min(b[1] for b in all_boxes)
-        x2 = max(b[2] for b in all_boxes)
-        y2 = max(b[3] for b in all_boxes)
+        Returns (pan_vel, tilt_vel, group_box, state)
+          pan_vel / tilt_vel : float [-1,+1]  or  None = stop
+          group_box          : (x1,y1,x2,y2) or None
+          state              : "TRACKING" | "COASTING" | "SEARCHING"
+        """
+        boxes = list(persons)
+        if ball is not None:
+            boxes.append(ball)
 
-        pw = (x2 - x1) * GROUP_PADDING
-        ph = (y2 - y1) * GROUP_PADDING
-        x1 = max(0.0,            x1 - pw)
-        y1 = max(0.0,            y1 - ph)
-        x2 = min(float(frame_w), x2 + pw)
-        y2 = min(float(frame_h), y2 + ph)
+        # ── No target ────────────────────────────────────────────────────────
+        if not boxes:
+            if time.monotonic() < self._coast_end and (self._pan_on or self._tilt_on):
+                pv = _vel_profile(self._pan_ema)  if self._pan_on  else 0.0
+                tv = _vel_profile(self._tilt_ema) if self._tilt_on else 0.0
+                if pv == 0.0 and tv == 0.0:
+                    return None, None, None, "COASTING"
+                return pv, tv, None, "COASTING"
+            # Coast expired — decay EMA and stop
+            self._pan_ema  *= (1.0 - EMA_ALPHA)
+            self._tilt_ema *= (1.0 - EMA_ALPHA)
+            self._pan_on    = False
+            self._tilt_on   = False
+            return None, None, None, "SEARCHING"
+
+        # ── Union bounding box of all detected objects ───────────────────────
+        x1 = min(b[0] for b in boxes);  y1 = min(b[1] for b in boxes)
+        x2 = max(b[2] for b in boxes);  y2 = max(b[3] for b in boxes)
+
+        pw = (x2 - x1) * _PADDING;  ph = (y2 - y1) * _PADDING
+        x1 = max(0.0,             x1 - pw);  y1 = max(0.0,             y1 - ph)
+        x2 = min(float(frame_w),  x2 + pw);  y2 = min(float(frame_h),  y2 + ph)
 
         cx = (x1 + x2) * 0.5
         cy = (y1 + y2) * 0.5
 
-        # Normalised error: -1 = far left/down, +1 = far right/up
+        # Normalised error: -1 = left/down,  +1 = right/up
         pan_err  =  (cx - frame_w * 0.5) / (frame_w * 0.5)
         tilt_err = -((cy - frame_h * 0.5) / (frame_h * 0.5))
 
+        # EMA smoothing (removes per-frame YOLO jitter)
         self._pan_ema  += EMA_ALPHA * (pan_err  - self._pan_ema)
         self._tilt_ema += EMA_ALPHA * (tilt_err - self._tilt_ema)
 
-        # Hysteresis: start > START_BAND, stop < DEADBAND
-        if self._pan_moving:
-            if abs(self._pan_ema) < DEADBAND:    self._pan_moving  = False
+        # Hysteresis: start when error > START_BAND, stop when error < DEADBAND
+        if self._pan_on:
+            if abs(self._pan_ema)  < DEADBAND:    self._pan_on  = False
         else:
-            if abs(self._pan_ema) > START_BAND:  self._pan_moving  = True
-
-        if self._tilt_moving:
-            if abs(self._tilt_ema) < DEADBAND:   self._tilt_moving = False
+            if abs(self._pan_ema)  > START_BAND:  self._pan_on  = True
+        if self._tilt_on:
+            if abs(self._tilt_ema) < DEADBAND:    self._tilt_on = False
         else:
-            if abs(self._tilt_ema) > START_BAND: self._tilt_moving = True
+            if abs(self._tilt_ema) > START_BAND:  self._tilt_on = True
 
-        pan_vel  = float(np.clip(KP_PAN  * self._pan_ema,  -1.0, 1.0)) if self._pan_moving  else 0.0
-        tilt_vel = float(np.clip(KP_TILT * self._tilt_ema, -1.0, 1.0)) if self._tilt_moving else 0.0
+        # Velocity: trapezoidal profile (full speed far, ramp near centre)
+        pv = _vel_profile(self._pan_ema)  if self._pan_on  else 0.0
+        tv = _vel_profile(self._tilt_ema) if self._tilt_on else 0.0
 
-        # Refresh coast timer every frame we have a live detection
-        self._coast_until = time.monotonic() + COAST_DURATION
+        # Refresh coast timer while target is visible
+        self._coast_end = time.monotonic() + COAST_SEC
 
-        if pan_vel == 0.0 and tilt_vel == 0.0:
-            return None, None, (int(x1), int(y1), int(x2), int(y2))
-
-        return pan_vel, tilt_vel, (int(x1), int(y1), int(x2), int(y2))
-
-    @property
-    def pan_ema(self):  return self._pan_ema
-    @property
-    def tilt_ema(self): return self._tilt_ema
+        box = (int(x1), int(y1), int(x2), int(y2))
+        if pv == 0.0 and tv == 0.0:
+            return None, None, box, "TRACKING"
+        return pv, tv, box, "TRACKING"

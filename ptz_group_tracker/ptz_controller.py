@@ -1,185 +1,119 @@
 ﻿"""
-ptz_controller.py - Threaded ONVIF PTZ controller (pan/tilt only, no zoom).
+ptz_controller.py  —  ONVIF pan/tilt controller (no zoom).
 
-One background thread fires ContinuousMove(PanTilt) at a fixed interval.
-Main loop calls set_pantilt() or clear_pantilt() — never blocks on network I/O.
+One background thread sends ContinuousMove at 12.5 Hz.
+Main loop calls move() or stop_move() — never blocks on network.
 """
-
 import time
 import threading
 import logging
-import numpy as np
 from onvif import ONVIFCamera
 from config import CAM_IP, CAM_PORT, CAM_USER, CAM_PASS, PT_MIN_VEL
 
-_SEND_INTERVAL = 0.05   # seconds between pan/tilt ContinuousMove commands (20 Hz)
-_MIN_CHANGE    = 0.04   # skip resend if velocity unchanged by less than this
+_INTERVAL   = 0.08    # seconds between commands (12.5 Hz)
+_MIN_CHANGE = 0.03    # skip resend if velocity barely changed
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 class PTZController:
+    def __init__(self):
+        self._ptz      = None
+        self._token    = None
+        self.connected = False
 
-    def __init__(self) -> None:
-        self._ptz       = None
-        self._token     = None
-        self._connected = False
+        self._lock     = threading.Lock()
+        self._pan      = 0.0
+        self._tilt     = 0.0
+        self._active   = False
+        self._running  = False
 
-        self._pt_lock      = threading.Lock()
-        self._desired_pan  = 0.0
-        self._desired_tilt = 0.0
-        self._pt_active    = False
-
-        self._running   = False
-        self._pt_thread = None
-
-    # -- Connection -----------------------------------------------------------
-
-    def connect(self) -> bool:
+    def connect(self):
         try:
-            cam   = ONVIFCamera(CAM_IP, CAM_PORT, CAM_USER, CAM_PASS)
-            media = cam.create_media_service()
-            self._ptz = cam.create_ptz_service()
-            profiles  = media.GetProfiles()
-            if not profiles:
-                logger.error("ONVIF: no profiles found.")
-                return False
-            self._token     = profiles[0].token
-            self._connected = True
-            logger.info("ONVIF connected. Token: %s", self._token)
+            cam          = ONVIFCamera(CAM_IP, CAM_PORT, CAM_USER, CAM_PASS)
+            media        = cam.create_media_service()
+            self._ptz    = cam.create_ptz_service()
+            profiles     = media.GetProfiles()
+            self._token  = profiles[0].token
+            self.connected = True
+            log.info("ONVIF connected  token=%s", self._token)
             return True
-        except Exception as exc:
-            logger.error("ONVIF connect failed: %s", exc)
-            self._connected = False
+        except Exception as e:
+            log.error("ONVIF connect failed: %s", e)
             return False
 
-    # -- Thread management ----------------------------------------------------
+    def start(self):
+        """Start background command thread (call after connect)."""
+        self._running = True
+        threading.Thread(target=self._loop, daemon=True, name="PTZ").start()
+        log.info("PTZ thread started")
 
-    def start_threads(self) -> None:
-        """Start the pan/tilt background thread (call after connect)."""
-        self._running   = True
-        self._pt_thread = threading.Thread(
-            target=self._pantilt_loop, daemon=True, name="PTZ-PanTilt")
-        self._pt_thread.start()
-        logger.info("PTZ pan/tilt thread started.")
+    def move(self, pan, tilt):
+        """Set desired pan/tilt velocity (non-blocking)."""
+        with self._lock:
+            self._pan, self._tilt, self._active = pan, tilt, True
 
-    # -- Public setters (non-blocking) ----------------------------------------
+    def stop_move(self):
+        """Tell the thread to stop the motor (non-blocking)."""
+        with self._lock:
+            self._active = False
 
-    def set_pantilt(self, pan: float, tilt: float) -> None:
-        with self._pt_lock:
-            self._desired_pan  = pan
-            self._desired_tilt = tilt
-            self._pt_active    = True
+    def shutdown(self):
+        self._running = False
+        self._send_stop()
 
-    def clear_pantilt(self) -> None:
-        with self._pt_lock:
-            self._pt_active = False
+    # ── Background thread ────────────────────────────────────────────────────
 
-    # -- Startup helper -------------------------------------------------------
-
-    def zoom_all_out(self, duration: float = 3.0) -> None:
-        """Blocking: zoom to widest angle for `duration` seconds at startup."""
-        if not self._connected:
-            return
-        try:
-            self._ptz.ContinuousMove({
-                "ProfileToken": self._token,
-                "Velocity": {
-                    "PanTilt": {"x": 0.0, "y": 0.0},
-                    "Zoom":    {"x": -1.0},
-                },
-            })
-            time.sleep(duration)
-            self.stop_all()
-        except Exception as exc:
-            logger.warning("zoom_all_out failed: %s", exc)
-
-    # -- Background thread ----------------------------------------------------
-
-    def _pantilt_loop(self) -> None:
-        _last_pan   = None
-        _last_tilt  = None
-        _was_active = False
+    def _loop(self):
+        last_pan   = None
+        last_tilt  = None
+        was_active = False
 
         while self._running:
-            time.sleep(_SEND_INTERVAL)
-            if not self._connected:
+            time.sleep(_INTERVAL)
+            if not self.connected:
                 continue
 
-            with self._pt_lock:
-                pan    = self._desired_pan
-                tilt   = self._desired_tilt
-                active = self._pt_active
+            with self._lock:
+                pan, tilt, active = self._pan, self._tilt, self._active
 
             if active:
-                # Clamp tiny velocities to zero — avoids slow motor crawl/noise
+                # clamp below noise floor
                 if abs(pan)  < PT_MIN_VEL: pan  = 0.0
                 if abs(tilt) < PT_MIN_VEL: tilt = 0.0
 
                 if pan == 0.0 and tilt == 0.0:
-                    if _was_active:
-                        try:
-                            self._ptz.Stop({
-                                "ProfileToken": self._token,
-                                "PanTilt": True, "Zoom": False,
-                            })
-                            _was_active = False
-                            _last_pan   = None
-                            _last_tilt  = None
-                        except Exception as exc:
-                            logger.error("PTZ Stop failed: %s", exc)
+                    if was_active:
+                        self._send_stop()
+                        was_active = last_pan = last_tilt = None
                     continue
 
-                changed = (
-                    _last_pan is None or
-                    abs(pan  - _last_pan)  > _MIN_CHANGE or
-                    abs(tilt - _last_tilt) > _MIN_CHANGE
-                )
+                changed = (last_pan is None
+                           or abs(pan  - last_pan)  > _MIN_CHANGE
+                           or abs(tilt - last_tilt) > _MIN_CHANGE)
                 if changed:
                     try:
                         self._ptz.ContinuousMove({
                             "ProfileToken": self._token,
-                            "Velocity": {
-                                "PanTilt": {"x": pan, "y": tilt},
-                            },
+                            "Velocity": {"PanTilt": {"x": pan, "y": tilt}},
                         })
-                        _last_pan   = pan
-                        _last_tilt  = tilt
-                        _was_active = True
-                    except Exception as exc:
-                        logger.error("ContinuousMove failed: %s", exc)
-                        self._connected = False
-            elif _was_active:
-                try:
-                    self._ptz.Stop({
-                        "ProfileToken": self._token,
-                        "PanTilt": True,
-                        "Zoom":    False,
-                    })
-                    _was_active = False
-                    _last_pan   = None
-                    _last_tilt  = None
-                except Exception as exc:
-                    logger.error("PTZ Stop failed: %s", exc)
+                        last_pan, last_tilt = pan, tilt
+                        was_active = True
+                    except Exception as e:
+                        log.error("ContinuousMove failed: %s", e)
+                        self.connected = False
+            elif was_active:
+                self._send_stop()
+                was_active = last_pan = last_tilt = None
 
-    # -- Helpers --------------------------------------------------------------
-
-    def stop_all(self) -> None:
-        if not self._connected:
+    def _send_stop(self):
+        if not self.connected:
             return
         try:
             self._ptz.Stop({
                 "ProfileToken": self._token,
                 "PanTilt": True,
-                "Zoom":    True,
+                "Zoom":    False,
             })
-        except Exception as exc:
-            logger.error("stop_all failed: %s", exc)
-
-    def shutdown(self) -> None:
-        self._running = False
-        self.stop_all()
-
-    @property
-    def is_connected(self) -> bool:
-        return self._connected
+        except Exception as e:
+            log.error("Stop failed: %s", e)

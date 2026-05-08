@@ -1,39 +1,42 @@
-﻿# ──────────────────────────────────────────────────────────────────────────────
-#  PTZ Group Tracker – Configuration
-#  These are ALL the settings you need to tune.
-# ──────────────────────────────────────────────────────────────────────────────
+﻿# =============================================================================
+#  PTZ Basketball Tracker  —  Configuration
+#  Only edit this file.
+# =============================================================================
+from pathlib import Path
 
-# ── Camera ────────────────────────────────────────────────────────────────────
-RTSP_URL = "rtsp://admin:123456@192.168.219.33:554/stream2"
+# Camera credentials & connection
+RTSP_URL = "rtsp://admin:123456@192.168.219.33:554/stream1"   # 640x360 @ 15fps sub-stream
 CAM_IP   = "192.168.219.33"
 CAM_PORT = 80
 CAM_USER = "admin"
 CAM_PASS = "123456"
 
-# ── Detection ─────────────────────────────────────────────────────────────────
-YOLO_MODEL  = "yolo26n.pt"   # nano = fastest on CPU; try yolo26m.pt for accuracy
-CONF_THRESH = 0.40           # detection confidence threshold (0.0–1.0)
+# Detection — NanoDet-Plus ONNX (5-10x faster than YOLO nano on CPU)
+MODEL_PATH  = Path(r"C:\Tracking cam\ptz_group_tracker\models\nanodet-plus-m_320.onnx")
+MODEL_URL   = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_320.onnx"
+PERSON_CONF = 0.35
+BALL_CONF   = 0.22
+NMS_IOU     = 0.55
 
-# ── Group framing ─────────────────────────────────────────────────────────────
-TARGET_FILL   = 0.72   # target: group should fill 72% of the larger frame dimension
-GROUP_PADDING = 0.10   # add 10% padding around the detected group bounding box
+# Tracking
+EMA_ALPHA  = 0.20   # lower = more smoothing, fewer jitter-driven direction flips
 
-# ── Pan / Tilt controller ─────────────────────────────────────────────────────
-KP_PAN  = 0.70   # pan  proportional gain
-KP_TILT = 0.70   # tilt proportional gain
+# Velocity profile  (all values = fraction of half-frame width)
+#
+#  |error|  >=  SLOW_ZONE  →  MAX_VEL
+#  DEADBAND  <  |error|  <  SLOW_ZONE  →  linear ramp PT_MIN_VEL..MAX_VEL
+#  |error|  <=  DEADBAND  →  stop
+#
+#  MAX_VEL caps how fast the motor ever runs — key overshoot lever.
+#  With ~1s latency keep MAX_VEL low (0.25–0.40) until tracking feels stable.
+DEADBAND   = 0.12   # stop within 12% of frame centre
+START_BAND = 0.22   # restart only when error exceeds 22%
+SLOW_ZONE  = 0.9   # ramp zone: 12% → 90%; full (capped) speed beyond 90%
+MAX_VEL    = 1.0   # hard cap on motor speed  (1.0 = max, 0.35 = gentle)
+PT_MIN_VEL = 0.12   # slowest command sent (prevents motor stall hum)
 
-EMA_ALPHA = 0.90   # error smoothing (higher = more reactive to fast movement)
+COAST_SEC  = 5.0    # keep moving N seconds after target disappears off screen
 
-DEADBAND   = 0.1   # stop motor when within 6% of centre (tighter = more accurate)
-START_BAND = 0.10   # restart motor when error grows above 10%
-
-PT_MIN_VEL = 0.08   # minimum motor speed (below this = Stop command)
-
-# How long (seconds) the camera keeps moving after losing the target.
-# Helps when a player runs off the edge — camera chases them instead of stopping.
-COAST_DURATION = 1.5
-
-# ── Flags ─────────────────────────────────────────────────────────────────────
-ENABLE_PTZ        = True
-ENABLE_AUDIO      = False   # True = stream audio via ffplay (requires FFmpeg in PATH)
-SHOW_DEBUG_WINDOW = True
+# Application
+ENABLE_PTZ  = True
+SHOW_WINDOW = True
