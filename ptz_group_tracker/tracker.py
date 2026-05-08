@@ -13,7 +13,7 @@ States:
 """
 import math
 import time
-from config import EMA_ALPHA, DEADBAND, START_BAND, SLOW_ZONE, MAX_VEL, PT_MIN_VEL, COAST_SEC
+from config import EMA_ALPHA, DEADBAND, START_BAND, SLOW_ZONE, MAX_VEL, PT_MIN_VEL, COAST_SEC, BALL_WEIGHT
 
 _PADDING = 0.08   # fractional padding added around the group bounding box
 
@@ -51,12 +51,8 @@ class Tracker:
           group_box          : (x1,y1,x2,y2) or None
           state              : "TRACKING" | "COASTING" | "SEARCHING"
         """
-        boxes = list(persons)
-        if ball is not None:
-            boxes.append(ball)
-
         # ── No target ────────────────────────────────────────────────────────
-        if not boxes:
+        if not persons and ball is None:
             if time.monotonic() < self._coast_end and (self._pan_on or self._tilt_on):
                 pv = _vel_profile(self._pan_ema)  if self._pan_on  else 0.0
                 tv = _vel_profile(self._tilt_ema) if self._tilt_on else 0.0
@@ -70,16 +66,31 @@ class Tracker:
             self._tilt_on   = False
             return None, None, None, "SEARCHING"
 
-        # ── Union bounding box of all detected objects ───────────────────────
-        x1 = min(b[0] for b in boxes);  y1 = min(b[1] for b in boxes)
-        x2 = max(b[2] for b in boxes);  y2 = max(b[3] for b in boxes)
+        # ── Group bounding box (persons only) ─────────────────────────────────
+        if persons:
+            gx1 = min(b[0] for b in persons);  gy1 = min(b[1] for b in persons)
+            gx2 = max(b[2] for b in persons);  gy2 = max(b[3] for b in persons)
+            pw = (gx2 - gx1) * _PADDING;       ph = (gy2 - gy1) * _PADDING
+            gx1 = max(0.0,            gx1 - pw);  gy1 = max(0.0,            gy1 - ph)
+            gx2 = min(float(frame_w), gx2 + pw);  gy2 = min(float(frame_h), gy2 + ph)
+            group_cx = (gx1 + gx2) * 0.5
+            group_cy = (gy1 + gy2) * 0.5
+            box = (int(gx1), int(gy1), int(gx2), int(gy2))
+        else:
+            # ball only — use ball centre as group centre
+            group_cx = (ball[0] + ball[2]) * 0.5
+            group_cy = (ball[1] + ball[3]) * 0.5
+            box = (int(ball[0]), int(ball[1]), int(ball[2]), int(ball[3]))
 
-        pw = (x2 - x1) * _PADDING;  ph = (y2 - y1) * _PADDING
-        x1 = max(0.0,             x1 - pw);  y1 = max(0.0,             y1 - ph)
-        x2 = min(float(frame_w),  x2 + pw);  y2 = min(float(frame_h),  y2 + ph)
-
-        cx = (x1 + x2) * 0.5
-        cy = (y1 + y2) * 0.5
+        # ── Target centre: weighted blend towards ball when visible ───────────
+        if ball is not None:
+            ball_cx = (ball[0] + ball[2]) * 0.5
+            ball_cy = (ball[1] + ball[3]) * 0.5
+            cx = BALL_WEIGHT * ball_cx + (1.0 - BALL_WEIGHT) * group_cx
+            cy = BALL_WEIGHT * ball_cy + (1.0 - BALL_WEIGHT) * group_cy
+        else:
+            cx = group_cx
+            cy = group_cy
 
         # Normalised error: -1 = left/down,  +1 = right/up
         pan_err  =  (cx - frame_w * 0.5) / (frame_w * 0.5)
@@ -106,7 +117,6 @@ class Tracker:
         # Refresh coast timer while target is visible
         self._coast_end = time.monotonic() + COAST_SEC
 
-        box = (int(x1), int(y1), int(x2), int(y2))
         if pv == 0.0 and tv == 0.0:
             return None, None, box, "TRACKING"
         return pv, tv, box, "TRACKING"

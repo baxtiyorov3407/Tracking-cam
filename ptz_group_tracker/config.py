@@ -4,8 +4,11 @@
 # =============================================================================
 from pathlib import Path
 
-# Camera credentials & connection
-RTSP_URL = "rtsp://admin:123456@192.168.219.33:554/stream1"   # 640x360 @ 15fps sub-stream
+# Camera credentials & connectionq
+# Dahua PTZ camera — IP 192.168.219.33
+# RTSP sub-stream: channel=1&subtype=1
+# ONVIF port on Dahua is 80
+RTSP_URL = "rtsp://admin:123456@192.168.219.33:554/cam/realmonitor?channel=1&subtype=1"
 CAM_IP   = "192.168.219.33"
 CAM_PORT = 80
 CAM_USER = "admin"
@@ -19,7 +22,8 @@ BALL_CONF   = 0.22
 NMS_IOU     = 0.55
 
 # Tracking
-EMA_ALPHA  = 0.20   # lower = more smoothing, fewer jitter-driven direction flips
+EMA_ALPHA   = 0.20   # lower = more smoothing, fewer jitter-driven direction flips
+BALL_WEIGHT = 0.65   # 0.0 = group centre only, 1.0 = ball centre only
 
 # Velocity profile  (all values = fraction of half-frame width)
 #
@@ -31,7 +35,7 @@ EMA_ALPHA  = 0.20   # lower = more smoothing, fewer jitter-driven direction flip
 #  With ~1s latency keep MAX_VEL low (0.25–0.40) until tracking feels stable.
 DEADBAND   = 0.12   # stop within 12% of frame centre
 START_BAND = 0.22   # restart only when error exceeds 22%
-SLOW_ZONE  = 0.9   # ramp zone: 12% → 90%; full (capped) speed beyond 90%
+SLOW_ZONE  = 1.0   # ramp zone: 12% → 100%; full (capped) speed beyond 100%
 MAX_VEL    = 1.0   # hard cap on motor speed  (1.0 = max, 0.35 = gentle)
 PT_MIN_VEL = 0.12   # slowest command sent (prevents motor stall hum)
 
