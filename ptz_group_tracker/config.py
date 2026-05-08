@@ -14,10 +14,10 @@ CAM_PORT = 80
 CAM_USER = "admin"
 CAM_PASS = "123456"
 
-# Detection — NanoDet-Plus ONNX (5-10x faster than YOLO nano on CPU)
-MODEL_PATH  = Path(r"C:\Tracking cam\ptz_group_tracker\models\nanodet-plus-m_320.onnx")
-MODEL_URL   = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_320.onnx"
-PERSON_CONF = 0.35
+# Detection — NanoDet-Plus ONNX  (416x416 = better accuracy than 320, still fast on CPU)
+MODEL_PATH  = Path(r"C:\Tracking cam\ptz_group_tracker\models\nanodet-plus-m_416.onnx")
+MODEL_URL   = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_416.onnx"
+PERSON_CONF = 0.45   # raised from 0.35 → fewer false positives on borderline detections
 BALL_CONF   = 0.22
 NMS_IOU     = 0.55
 

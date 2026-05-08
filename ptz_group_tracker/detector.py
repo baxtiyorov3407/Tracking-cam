@@ -3,8 +3,8 @@ detector.py  —  NanoDet-Plus ONNX person + ball detector.
 Returns (persons, ball) where persons is a list of [x1,y1,x2,y2]
 and ball is [x1,y1,x2,y2] or None.
 
-Model auto-downloads on first run (~6 MB).
-Typical CPU inference: 20-35 ms at 320x320.
+Model auto-downloads on first run (~10 MB).
+Typical CPU inference: 35-55 ms at 416x416.
 """
 import math
 import os
@@ -18,7 +18,7 @@ from config import MODEL_PATH, MODEL_URL, PERSON_CONF, BALL_CONF, NMS_IOU
 
 _PERSON     = 0     # COCO class id
 _BALL       = 32    # COCO class id (sports ball)
-_INPUT_SIZE = 320
+_INPUT_SIZE = 416
 _MAX_DET    = 30
 
 _MEAN = np.array([103.53, 116.28, 123.675], dtype=np.float32).reshape(1, 1, 3)
