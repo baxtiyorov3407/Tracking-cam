@@ -170,7 +170,7 @@ def main():
         infer_ms = (time.perf_counter() - t_det) * 1000.0
 
         # Track
-        pan_vel, tilt_vel, box, state = tracker.update(persons, ball, w, h)
+        pan_vel, tilt_vel, box, state, dbg = tracker.update(persons, ball, w, h)
 
         # Command camera
         if ENABLE_PTZ and ptz.connected:
@@ -183,19 +183,33 @@ def main():
         if SHOW_WINDOW:
             vis = frame.copy()
 
-            for x1, y1, x2, y2 in persons:
+            # Draw persons — bright green = in-action, dim green = peripheral
+            action_mask = dbg.get("action_mask", [])
+            for i, (x1, y1, x2, y2) in enumerate(persons):
+                in_act = action_mask[i] if i < len(action_mask) else True
+                colour = (0, 230, 0) if in_act else (0, 100, 0)
+                thickness = 2 if in_act else 1
                 cv2.rectangle(vis, (int(x1), int(y1)), (int(x2), int(y2)),
-                              (0, 200, 0), 1)
+                              colour, thickness)
+
+            # Ball — orange box
             if ball:
                 cv2.rectangle(vis, (int(ball[0]), int(ball[1])),
                               (int(ball[2]), int(ball[3])), (0, 140, 255), 2)
+
+            # Action box — cyan outline (only in-action players + ball)
             if box:
                 cv2.rectangle(vis, (box[0], box[1]), (box[2], box[3]),
                               (0, 255, 255), 2)
-                cx, cy = (box[0]+box[2])//2, (box[1]+box[3])//2
-                cv2.drawMarker(vis, (cx, cy), (0, 255, 255),
-                               cv2.MARKER_CROSS, 24, 2)
-            cv2.drawMarker(vis, (w//2, h//2), (255, 255, 255),
+
+            # Lead-prediction dot — yellow circle where camera is aiming
+            lead_px = dbg.get("lead_px")
+            if lead_px:
+                cv2.circle(vis, lead_px, 10, (0, 255, 255), -1)
+                cv2.circle(vis, lead_px, 14, (0, 200, 200),  2)
+
+            # Frame centre crosshair
+            cv2.drawMarker(vis, (w // 2, h // 2), (255, 255, 255),
                            cv2.MARKER_CROSS, 20, 1)
 
             loop_fps = ((len(fps_q)-1) / (fps_q[-1]-fps_q[0]+1e-6)
@@ -207,7 +221,10 @@ def main():
                         (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.60, (200,200,200), 1, cv2.LINE_AA)
             cv2.putText(vis, state,
                         (10, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.90, col, 2, cv2.LINE_AA)
-            cv2.putText(vis, f"People:{len(persons)}  Ball:{'yes' if ball else 'no'}",
+            n_act  = dbg.get("n_action", 0)
+            speed  = dbg.get("speed_norm", 0.0)
+            cv2.putText(vis,
+                        f"People:{len(persons)}  Action:{n_act}  Ball:{'yes' if ball else 'no'}  Spd:{speed:.2f}",
                         (10, 86), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200,200,200), 1, cv2.LINE_AA)
             if pan_vel is not None:
                 cv2.putText(vis, f"pan={pan_vel:+.2f}  tilt={tilt_vel:+.2f}",

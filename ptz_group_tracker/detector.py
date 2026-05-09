@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from config import MODEL_PATH, MODEL_URL, PERSON_CONF, BALL_CONF, NMS_IOU
+from config import MODEL_PATH, MODEL_URL, PERSON_CONF, BALL_CONF, NMS_IOU, PERSON_MIN_HEIGHT, PERSON_MAX_ASPECT
 
 _PERSON     = 0     # COCO class id
 _BALL       = 32    # COCO class id (sports ball)
@@ -43,6 +43,23 @@ def _ensure_model():
     urllib.request.urlretrieve(MODEL_URL, str(MODEL_PATH), _prog)
     print()
     print("[DETECTOR] Download complete.")
+
+
+def _letterbox(frame, size):
+    """Resize frame into a square canvas with aspect-correct letterboxing.
+    Returns (canvas, scale, pad_x, pad_y).
+    Neutral fill = 114 (standard for COCO-trained models).
+    """
+    oh, ow = frame.shape[:2]
+    scale  = size / max(ow, oh)
+    nw     = int(round(ow * scale))
+    nh     = int(round(oh * scale))
+    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    canvas  = np.full((size, size, 3), 114, dtype=np.uint8)
+    pad_x   = (size - nw) // 2
+    pad_y   = (size - nh) // 2
+    canvas[pad_y:pad_y + nh, pad_x:pad_x + nw] = resized
+    return canvas, scale, pad_x, pad_y
 
 
 def _nms(boxes, scores):
@@ -116,10 +133,9 @@ class Detector:
         """
         oh, ow = frame.shape[:2]
 
-        # Pre-process
-        inp = cv2.resize(frame, (_INPUT_SIZE, _INPUT_SIZE),
-                         interpolation=cv2.INTER_LINEAR)
-        inp = (inp.astype(np.float32) - _MEAN) / _STD
+        # Pre-process — letterbox to preserve aspect ratio (ball stays round)
+        lbox, lb_scale, lb_pad_x, lb_pad_y = _letterbox(frame, _INPUT_SIZE)
+        inp = (lbox.astype(np.float32) - _MEAN) / _STD
         inp = inp.transpose(2, 0, 1)[None]          # (1, 3, H, W)
 
         # Inference
@@ -158,10 +174,9 @@ class Detector:
                 bxs[:, 2] = ctr[:, 0] + dist[:, 2]
                 bxs[:, 3] = ctr[:, 1] + dist[:, 3]
 
-                # Scale to original frame
-                sx, sy = ow / _INPUT_SIZE, oh / _INPUT_SIZE
-                bxs[:, [0, 2]] = (bxs[:, [0, 2]] * sx).clip(0, ow - 1)
-                bxs[:, [1, 3]] = (bxs[:, [1, 3]] * sy).clip(0, oh - 1)
+                # Undo letterbox → original frame coordinates
+                bxs[:, [0, 2]] = ((bxs[:, [0, 2]] - lb_pad_x) / lb_scale).clip(0, ow - 1)
+                bxs[:, [1, 3]] = ((bxs[:, [1, 3]] - lb_pad_y) / lb_scale).clip(0, oh - 1)
 
                 for cls_id in (_PERSON, _BALL):
                     ci = np.where(labels == cls_id)[0]
@@ -173,6 +188,13 @@ class Detector:
                         if x2 <= x1 or y2 <= y1:
                             continue
                         if cls_id == _PERSON:
+                            bh = y2 - y1
+                            bw = x2 - x1
+                            # Reject boxes that are too small or too wide to be a person
+                            if bh < PERSON_MIN_HEIGHT:
+                                continue
+                            if bw / max(bh, 1) > PERSON_MAX_ASPECT:
+                                continue
                             persons.append([x1, y1, x2, y2])
                         else:
                             c = float(confs[ci[k]])
