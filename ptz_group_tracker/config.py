@@ -5,11 +5,11 @@
 from pathlib import Path
 
 # Camera credentials & connectionq
-# Dahua PTZ camera — IP 192.168.219.33
+# Dahua PTZ camera — IP 192.168.0.33
 # RTSP sub-stream: channel=1&subtype=1
 # ONVIF port on Dahua is 80
-RTSP_URL = "rtsp://admin:123456@192.168.219.33:554/cam/realmonitor?channel=1&subtype=1"
-CAM_IP   = "192.168.219.33"
+RTSP_URL = "rtsp://admin:123456@192.168.0.33:554/cam/realmonitor?channel=1&subtype=1"
+CAM_IP   = "192.168.0.33"
 CAM_PORT = 80
 CAM_USER = "admin"
 CAM_PASS = "123456"
