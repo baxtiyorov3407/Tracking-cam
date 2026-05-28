@@ -24,10 +24,11 @@ import time
 from config import (
     EMA_ALPHA, EMA_ALPHA_MAX, EMA_ALPHA_SCALE,
     DEADBAND, START_BAND, SLOW_ZONE, MAX_VEL, PT_MIN_VEL,
-    COAST_SEC, BALL_WEIGHT,
+    COAST_SEC,
     ACTION_SIGMA, LEAD_TIME, VEL_EMA_ALPHA, MIN_ACTION_WEIGHT,
     TILT_UP_BIAS, TILT_BIAS_THRESHOLD, CLOSE_MAX_VEL,
     PAN_PRIORITY_SCALE,
+    GROUP_CLUSTER_DIST, GROUP_POWER,
 )
 
 _PADDING = 0.06   # fractional padding around the action bounding box
@@ -84,6 +85,85 @@ def _weighted_centroid(weights):
     return cx, cy
 
 
+def _cluster_persons(persons, max_dist):
+    """
+    Single-linkage clustering of person boxes by centre-to-centre distance.
+    Two persons closer than max_dist (pixels) belong to the same group.
+
+    Returns a list of clusters; each cluster is a list of person indices
+    into the original ``persons`` list.
+    """
+    n = len(persons)
+    if n == 0:
+        return []
+
+    centres = [((p[0] + p[2]) * 0.5, (p[1] + p[3]) * 0.5) for p in persons]
+    parent  = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    max_d2 = max_dist * max_dist
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = centres[i][0] - centres[j][0]
+            dy = centres[i][1] - centres[j][1]
+            if dx * dx + dy * dy <= max_d2:
+                union(i, j)
+
+    groups: dict = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return list(groups.values())
+
+
+def _blend_clusters(clusters, persons, power):
+    """
+    Soft-blend all clusters by size to produce a single smooth target.
+
+    Each cluster contributes its centroid with weight ``size ** power``.
+    This avoids the "jump" of hard-switching between clusters: when one
+    person crosses from one group to another, the target shifts gradually
+    instead of teleporting. A clearly larger group still dominates.
+
+    Returns
+    -------
+    cx, cy : float
+        Size-weighted centroid across all clusters.
+    cl_info : list of (idx_list, weight, ccx, ccy)
+        Per-cluster info, used to build the action_mask.
+    max_w : float
+        The largest individual cluster weight.
+    """
+    cl_info = []
+    total_w = 0.0
+    cx_acc  = 0.0
+    cy_acc  = 0.0
+    max_w   = 0.0
+    for idx_list in clusters:
+        n   = len(idx_list)
+        ccx = sum((persons[i][0] + persons[i][2]) * 0.5 for i in idx_list) / n
+        ccy = sum((persons[i][1] + persons[i][3]) * 0.5 for i in idx_list) / n
+        w   = float(n) ** power
+        cl_info.append((idx_list, w, ccx, ccy))
+        total_w += w
+        cx_acc  += w * ccx
+        cy_acc  += w * ccy
+        if w > max_w:
+            max_w = w
+    cx = cx_acc / total_w
+    cy = cy_acc / total_w
+    return cx, cy, cl_info, max_w
+
+
 # ── Tracker ───────────────────────────────────────────────────────────────────
 
 class Tracker:
@@ -110,12 +190,11 @@ class Tracker:
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    def update(self, persons, ball, frame_w, frame_h):
+    def update(self, persons, frame_w, frame_h):
         """
         Parameters
         ----------
         persons  : list of [x1, y1, x2, y2]  (pixel coords)
-        ball     : [x1, y1, x2, y2] or None
         frame_w  : int
         frame_h  : int
 
@@ -133,8 +212,9 @@ class Tracker:
         """
         now = time.monotonic()
 
+
         # ── No targets at all ─────────────────────────────────────────────────
-        if not persons and ball is None:
+        if not persons:
             self._prev_cx = self._prev_cy = self._prev_t = None
             self._vel_x  *= 0.85
             self._vel_y  *= 0.85
@@ -156,40 +236,35 @@ class Tracker:
             self._tilt_on   = False
             return None, None, None, "SEARCHING", _dbg_empty
 
-        # ── Reference anchor: ball centre or person centroid ──────────────────
-        if ball is not None:
-            ref_cx = (ball[0] + ball[2]) * 0.5
-            ref_cy = (ball[1] + ball[3]) * 0.5
-        elif persons:
-            ref_cx = sum((p[0] + p[2]) * 0.5 for p in persons) / len(persons)
-            ref_cy = sum((p[1] + p[3]) * 0.5 for p in persons) / len(persons)
-        else:
-            ref_cx, ref_cy = frame_w * 0.5, frame_h * 0.5
+        # ── Cluster persons into groups, soft-blend by size ───────────────────
+        # All clusters contribute to the target, but each cluster's pull is
+        # weighted by  (cluster_size ** GROUP_POWER). A clearly larger group
+        # dominates, while one person crossing between groups only shifts the
+        # target slightly — no teleporting, smooth and stable on a busy court.
+        cluster_dist_px = GROUP_CLUSTER_DIST * frame_w
+        clusters        = _cluster_persons(persons, cluster_dist_px)
+        blend_cx, blend_cy, cl_info, max_cl_w = _blend_clusters(
+            clusters, persons, GROUP_POWER
+        )
 
-        # ── Weighted action centre ────────────────────────────────────────────
-        # Players closer to the ball/ref get exponentially higher weight.
-        # This naturally focuses the camera on the cluster near the action
-        # rather than the geometric centre of all 10 players.
-        if persons:
-            sigma_px    = ACTION_SIGMA * frame_w
-            wdata       = _player_weights(persons, ref_cx, ref_cy, sigma_px)
-            group_cx, group_cy = _weighted_centroid(wdata)
+        # Refine with action sigma weighting: players nearer the blended
+        # centre get a little extra pull (smooths motion within the group).
+        sigma_px    = ACTION_SIGMA * frame_w
+        wdata       = _player_weights(persons, blend_cx, blend_cy, sigma_px)
+        group_cx, group_cy = _weighted_centroid(wdata)
 
-            # Action mask: players with weight >= MIN_ACTION_WEIGHT * max_w
-            max_w       = max(w for w, _, _ in wdata)
-            threshold   = max_w * MIN_ACTION_WEIGHT
-            action_mask = [w >= threshold for w, _, _ in wdata]
-        else:
-            wdata       = []
-            action_mask = []
-            group_cx, group_cy = ref_cx, ref_cy
+        # action_mask: members of any cluster whose weight is at least
+        # MIN_ACTION_WEIGHT of the largest cluster's weight. Isolated people
+        # in tiny clusters are excluded from the on-screen action box.
+        cluster_threshold = max_cl_w * MIN_ACTION_WEIGHT
+        action_mask = [False] * len(persons)
+        for idx_list, w, _ccx, _ccy in cl_info:
+            if w >= cluster_threshold:
+                for i in idx_list:
+                    action_mask[i] = True
 
-        # ── Blend group centre toward ball ────────────────────────────────────
-        if ball is not None:
-            cx = BALL_WEIGHT * ref_cx + (1.0 - BALL_WEIGHT) * group_cx
-            cy = BALL_WEIGHT * ref_cy + (1.0 - BALL_WEIGHT) * group_cy
-        else:
-            cx, cy = group_cx, group_cy
+        # ── Action centre = blended group centroid ──────────────────────────
+        cx, cy = group_cx, group_cy
 
         # ── Velocity estimation ───────────────────────────────────────────────
         if self._prev_t is not None:
@@ -235,9 +310,12 @@ class Tracker:
         # ── Adaptive EMA: suppress speed-boost in overflow ────────────────────
         # In overflow the camera must move slowly and deliberately; a close
         # person moving fast in pixels must NOT make the camera react faster.
-        speed_norm = math.hypot(self._vel_x / frame_w, self._vel_y / frame_h)
-        alpha_boost = speed_norm * EMA_ALPHA_SCALE * (1.0 - overflow_norm)
-        alpha = min(EMA_ALPHA_MAX, EMA_ALPHA + alpha_boost)
+        # Guard against a misconfigured ceiling (MAX < base) so the boost
+        # remains meaningful.
+        speed_norm   = math.hypot(self._vel_x / frame_w, self._vel_y / frame_h)
+        alpha_boost  = speed_norm * EMA_ALPHA_SCALE * (1.0 - overflow_norm)
+        alpha_ceil   = max(EMA_ALPHA, EMA_ALPHA_MAX)
+        alpha        = min(alpha_ceil, EMA_ALPHA + alpha_boost)
 
         # Pan gets full alpha — catch the person horizontally first.
         self._pan_ema += alpha * (pan_err - self._pan_ema)
@@ -280,15 +358,10 @@ class Tracker:
             ay1 = min(p[1] for p in in_action)
             ax2 = max(p[2] for p in in_action)
             ay2 = max(p[3] for p in in_action)
-            if ball is not None:
-                ax1 = min(ax1, ball[0]); ay1 = min(ay1, ball[1])
-                ax2 = max(ax2, ball[2]); ay2 = max(ay2, ball[3])
             pw = (ax2 - ax1) * _PADDING; ph = (ay2 - ay1) * _PADDING
             ax1 = max(0,       int(ax1 - pw)); ay1 = max(0,       int(ay1 - ph))
             ax2 = min(frame_w, int(ax2 + pw)); ay2 = min(frame_h, int(ay2 + ph))
             box = (ax1, ay1, ax2, ay2)
-        elif ball is not None:
-            box = (int(ball[0]), int(ball[1]), int(ball[2]), int(ball[3]))
         else:
             box = None
 

@@ -166,11 +166,11 @@ def main():
 
         # Detect
         t_det = time.perf_counter()
-        persons, ball = det.detect(frame)
+        persons = det.detect(frame)
         infer_ms = (time.perf_counter() - t_det) * 1000.0
 
         # Track
-        pan_vel, tilt_vel, box, state, dbg = tracker.update(persons, ball, w, h)
+        pan_vel, tilt_vel, box, state, dbg = tracker.update(persons, w, h)
 
         # Command camera
         if ENABLE_PTZ and ptz.connected:
@@ -191,11 +191,6 @@ def main():
                 thickness = 2 if in_act else 1
                 cv2.rectangle(vis, (int(x1), int(y1)), (int(x2), int(y2)),
                               colour, thickness)
-
-            # Ball — orange box
-            if ball:
-                cv2.rectangle(vis, (int(ball[0]), int(ball[1])),
-                              (int(ball[2]), int(ball[3])), (0, 140, 255), 2)
 
             # Action box — cyan outline (only in-action players + ball)
             if box:
@@ -224,7 +219,7 @@ def main():
             n_act  = dbg.get("n_action", 0)
             speed  = dbg.get("speed_norm", 0.0)
             cv2.putText(vis,
-                        f"People:{len(persons)}  Action:{n_act}  Ball:{'yes' if ball else 'no'}  Spd:{speed:.2f}",
+                        f"People:{len(persons)}  Action:{n_act}  Spd:{speed:.2f}",
                         (10, 86), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200,200,200), 1, cv2.LINE_AA)
             if pan_vel is not None:
                 cv2.putText(vis, f"pan={pan_vel:+.2f}  tilt={tilt_vel:+.2f}",
