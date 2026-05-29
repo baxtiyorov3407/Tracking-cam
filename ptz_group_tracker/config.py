@@ -5,7 +5,7 @@
 from pathlib import Path
 
 # Camera credentials & connection
-# Dahua PTZ camera — IP 192.168.0.102
+# Dahua PTZ camera — IP 192.168.1.101
 # RTSP sub-stream: channel=1&subtype=1
 # ONVIF port on Dahua is 80
 RTSP_URL = "rtsp://admin:123456@192.168.1.101:554/cam/realmonitor?channel=1&subtype=1"
@@ -107,6 +107,28 @@ CLOSE_MAX_VEL       = 0.18   # Tilt speed cap when close
 
 # --- Misc ---
 COAST_SEC  = 3    # Keep moving N seconds after target disappears off screen (searching)
+
+# ===================== COURT REGION-OF-INTEREST =====================
+# Manual court calibration (see calibrate_court.py). When a court.json file
+# exists in this folder it is loaded at startup and detections whose foot
+# point falls outside the polygon are discarded. This stops the tracker from
+# locking onto fans, passers-by, or anyone off the court.
+#
+# COURT_FILTER_ENABLED — if False, the polygon is loaded but not applied
+#   (useful for debugging without re-running calibration).
+# COURT_FILE — path to the saved polygon. Auto-disabled if missing.
+# COURT_PADDING_PX — pixels of slack outside the polygon still counted as
+#   "on court" (covers players standing on the sideline / inbounding).
+# COURT_DRAW_OVERLAY — draw the polygon on the debug window.
+#
+# NOTE (v1 limitation): the polygon is stored in image-pixel coordinates of
+# the camera at the pose used during calibration. It is only fully accurate
+# while the camera stays near that pose. PTZ-aware (ray-based) calibration
+# is a planned upgrade.
+COURT_FILE            = Path(__file__).resolve().parent / "court.json"
+COURT_FILTER_ENABLED  = True
+COURT_PADDING_PX      = 40
+COURT_DRAW_OVERLAY    = True
 
 # Application
 ENABLE_PTZ  = True
