@@ -204,8 +204,10 @@ class PTZController:
         Returns (pan, tilt, hit_flags) where hit_flags is a 2-tuple of bools."""
         if self._limits is None:
             return pan, tilt, (False, False)
-        with self._position_lock:
-            pos = self._position
+        # Use get_position() so dead-reckoned pose is honored when
+        # GetStatus is unreliable (otherwise the clamp sees a stuck value
+        # like (1.0, 1.0) and zeroes every command).
+        pos = self.get_position()
         if pos is None:
             return pan, tilt, (False, False)
 
