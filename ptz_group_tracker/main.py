@@ -294,6 +294,24 @@ def main():
             cv2.putText(vis, "ONVIF OK" if ptz.connected else "ONVIF OFFLINE",
                         (10, 128), cv2.FONT_HERSHEY_SIMPLEX, 0.48, onvif_col, 1, cv2.LINE_AA)
 
+            # PTZ limits status (only shown when calibration is loaded)
+            if ptz.limits_active():
+                pos = ptz.get_position()
+                pan_hit, tilt_hit = ptz.last_clamp_hit()
+                if pos is None:
+                    lim_txt = "PTZ LIMITS: waiting GetStatus"
+                    lim_col = (0, 60, 220)
+                else:
+                    p, t, _ = pos
+                    lim_txt = f"PTZ LIMITS  pan={p:+.2f} tilt={t:+.2f}"
+                    if pan_hit or tilt_hit:
+                        lim_txt += "  CLAMP"
+                        lim_col = (0, 165, 255)
+                    else:
+                        lim_col = (0, 200, 0)
+                cv2.putText(vis, lim_txt, (10, 148),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.48, lim_col, 1, cv2.LINE_AA)
+
             cv2.imshow("PTZ Tracker", vis)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break

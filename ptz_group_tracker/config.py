@@ -108,27 +108,40 @@ CLOSE_MAX_VEL       = 0.18   # Tilt speed cap when close
 # --- Misc ---
 COAST_SEC  = 3    # Keep moving N seconds after target disappears off screen (searching)
 
-# ===================== COURT REGION-OF-INTEREST =====================
+# ===================== COURT REGION-OF-INTEREST (v1, image-pixel) =====================
 # Manual court calibration (see calibrate_court.py). When a court.json file
 # exists in this folder it is loaded at startup and detections whose foot
 # point falls outside the polygon are discarded. This stops the tracker from
 # locking onto fans, passers-by, or anyone off the court.
 #
-# COURT_FILTER_ENABLED — if False, the polygon is loaded but not applied
-#   (useful for debugging without re-running calibration).
-# COURT_FILE — path to the saved polygon. Auto-disabled if missing.
-# COURT_PADDING_PX — pixels of slack outside the polygon still counted as
-#   "on court" (covers players standing on the sideline / inbounding).
-# COURT_DRAW_OVERLAY — draw the polygon on the debug window.
-#
-# NOTE (v1 limitation): the polygon is stored in image-pixel coordinates of
-# the camera at the pose used during calibration. It is only fully accurate
-# while the camera stays near that pose. PTZ-aware (ray-based) calibration
-# is a planned upgrade.
+# v1 LIMITATION — only usable when the camera can see the WHOLE court in one
+# frame at its tracking pose. If the FOV is narrower than the court (typical
+# outdoor setup), use PTZ position limits instead (see below) — that is the
+# default for this project.
 COURT_FILE            = Path(__file__).resolve().parent / "court.json"
-COURT_FILTER_ENABLED  = True
+COURT_FILTER_ENABLED  = False        # off by default; switch on if your venue fits
 COURT_PADDING_PX      = 40
 COURT_DRAW_OVERLAY    = True
+
+
+# ===================== PTZ POSITION LIMITS (recommended) =====================
+# Calibrate once with calibrate_ptz_limits.py: drive the camera with WASD/QE
+# to each edge of the play area and tag the current pan/tilt/zoom as a min or
+# max limit. At runtime, ptz_controller polls the camera's position via ONVIF
+# GetStatus and refuses motion commands that would push it outside the box.
+# This prevents the camera from panning at spectators / off the court even
+# when its FOV is much smaller than the court itself.
+#
+# PTZ_LIMITS_FILE       — saved limits file. Auto-disabled if missing.
+# PTZ_LIMITS_ENABLED    — master switch. False = no clamping (raw tracking).
+# PTZ_LIMIT_SOFT_BAND   — within this distance of a limit, the velocity is
+#   linearly scaled down to zero (smooth deceleration). Same units as the
+#   normalized ONVIF position ([-1, 1] for pan/tilt, [0, 1] for zoom).
+# PTZ_STATUS_HZ         — how often to poll GetStatus. 5 Hz is plenty.
+PTZ_LIMITS_FILE       = Path(__file__).resolve().parent / "ptz_limits.json"
+PTZ_LIMITS_ENABLED    = True
+PTZ_LIMIT_SOFT_BAND   = 0.05
+PTZ_STATUS_HZ         = 5.0
 
 # Application
 ENABLE_PTZ  = True
