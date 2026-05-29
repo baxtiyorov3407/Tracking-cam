@@ -141,6 +141,37 @@ class PTZController:
             self._dr_pan, self._dr_tilt = pan, tilt
             self._dr_last_t = None
 
+    def home_to_origin(self, wait_sec=3.0):
+        """Send the camera to absolute (0,0) and reset dead-reckoning.
+
+        Used at program startup so that the dead-reckoned position estimate
+        matches the same physical origin that was used during calibration
+        (the H key in calibrate_ptz_limits.py also sends AbsoluteMove(0,0)
+        and resets DR).
+
+        Returns True if AbsoluteMove was accepted, False otherwise. Even
+        on failure the DR position is still zeroed so the user can manually
+        re-center the camera and the limits will then be consistent.
+        """
+        if not self.connected:
+            return False
+        ok = False
+        try:
+            self._ptz.AbsoluteMove({
+                "ProfileToken": self._token,
+                "Position": {"PanTilt": {"x": 0.0, "y": 0.0}},
+            })
+            ok = True
+            log.info("Homing camera to absolute (0,0) … waiting %.1fs",
+                     wait_sec)
+            time.sleep(max(0.0, wait_sec))
+        except Exception as e:
+            log.warning("AbsoluteMove home failed (%s) — "
+                        "PTZ limits may not match physical position. "
+                        "Manually centre the camera before tracking.", e)
+        self.reset_position(0.0, 0.0)
+        return ok
+
     def limits_active(self):
         return self._limits is not None
 

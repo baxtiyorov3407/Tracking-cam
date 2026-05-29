@@ -200,6 +200,13 @@ def main():
         log.info("Connecting ONVIF …")
         if ptz.connect():
             ptz.start()
+            # If PTZ limits are loaded, send the camera to absolute (0,0)
+            # so the dead-reckoned position matches the same origin used
+            # during calibration. Without this, the saved limits won't
+            # correspond to actual physical extremes after a restart.
+            if ptz.limits_active():
+                log.info("PTZ limits active — homing camera before tracking …")
+                ptz.home_to_origin(wait_sec=3.0)
         else:
             log.warning("ONVIF offline — detection-only mode")
 

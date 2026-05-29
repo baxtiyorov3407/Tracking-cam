@@ -111,20 +111,13 @@ def _zoom_stop(ptz):
 
 
 def _absolute_home(ptz):
-    """Send camera to (0,0) and reset the dead-reckoned position estimate."""
+    """Send camera to (0,0) and reset the dead-reckoned position estimate.
+    Uses the same controller method that main.py runs at startup, so the
+    calibration origin and runtime origin are guaranteed to match."""
     try:
-        ptz._ptz.AbsoluteMove({
-            "ProfileToken": ptz._token,
-            "Position": {"PanTilt": {"x": 0.0, "y": 0.0}},
-        })
+        ptz.home_to_origin(wait_sec=2.0)
     except Exception as e:
-        print(f"home (AbsoluteMove) not supported by camera: {e}")
-    # Always zero the dead-reckoned position so the user gets a clean origin
-    # regardless of whether AbsoluteMove succeeded.
-    try:
-        ptz.reset_position(0.0, 0.0)
-    except Exception:
-        pass
+        print(f"home failed: {e}")
 
 
 def draw_hud(frame, ptz, limits, speed_mult, status_msg=None, status_ok=True):
