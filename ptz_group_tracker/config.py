@@ -97,6 +97,30 @@ GROUP_CLUSTER_DIST  = 0.30
 #   5.0 = near hard-switch  (3 vs 1 → 99.6% / 0.4%)
 GROUP_POWER         = 3.0
 
+# --- Motion weighting (follow movers, ignore stationary leftovers) ---
+# Each detected person is given a per-frame motion weight by matching to the
+# nearest previous-frame detection. Cluster pull then uses summed motion
+# weights instead of raw head-count, so:
+#   * A lone person standing still after the action leaves → weight ~= floor,
+#     so the camera does NOT lock onto them; it coasts and then SEARCHES.
+#   * A moving group dominates even if a few static people are nearer.
+#
+# MOTION_WEIGHTING       — master switch. False = old count-based behaviour.
+# MOTION_STATIC_FLOOR    — minimum weight a fully-static person contributes
+#   (0.0 = static people are completely ignored, 1.0 = motion doesn't matter).
+# MOTION_REF_SPEED       — frame-fractions per second at which a person hits
+#   weight = 1.0. Walking ~0.10, running across frame ~0.30.
+# MOTION_MATCH_DIST      — max distance (fraction of frame width) for matching
+#   a current detection to a previous one when estimating per-person speed.
+# MOTION_TOTAL_FLOOR     — if the SUM of motion weights across all detections
+#   is below this, the tracker treats the scene as "no real action" and enters
+#   coast/search instead of locking on whoever's left.
+MOTION_WEIGHTING     = True
+MOTION_STATIC_FLOOR  = 0.10
+MOTION_REF_SPEED     = 0.15
+MOTION_MATCH_DIST    = 0.10
+MOTION_TOTAL_FLOOR   = 0.35
+
 # --- Pan/tilt coordination ---
 PAN_PRIORITY_SCALE  = 1.2    # How strongly fast pan suppresses tilt EMA alpha
 

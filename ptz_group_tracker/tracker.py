@@ -29,6 +29,8 @@ from config import (
     TILT_UP_BIAS, TILT_BIAS_THRESHOLD, CLOSE_MAX_VEL,
     PAN_PRIORITY_SCALE,
     GROUP_CLUSTER_DIST, GROUP_POWER,
+    MOTION_WEIGHTING, MOTION_STATIC_FLOOR, MOTION_REF_SPEED,
+    MOTION_MATCH_DIST, MOTION_TOTAL_FLOOR,
 )
 
 _PADDING = 0.06   # fractional padding around the action bounding box
@@ -125,23 +127,20 @@ def _cluster_persons(persons, max_dist):
     return list(groups.values())
 
 
-def _blend_clusters(clusters, persons, power):
+def _blend_clusters(clusters, persons, power, motion_w=None):
     """
-    Soft-blend all clusters by size to produce a single smooth target.
+    Soft-blend all clusters to produce a single smooth target.
 
-    Each cluster contributes its centroid with weight ``size ** power``.
-    This avoids the "jump" of hard-switching between clusters: when one
-    person crosses from one group to another, the target shifts gradually
-    instead of teleporting. A clearly larger group still dominates.
+    Each cluster contributes its centroid with weight ``effective_size ** power``
+    where ``effective_size`` is the sum of per-person motion weights (or the
+    raw count when motion_w is None). This makes a moving group dominate over
+    a static leftover person without ever "jumping" between clusters.
 
     Returns
     -------
     cx, cy : float
-        Size-weighted centroid across all clusters.
     cl_info : list of (idx_list, weight, ccx, ccy)
-        Per-cluster info, used to build the action_mask.
     max_w : float
-        The largest individual cluster weight.
     """
     cl_info = []
     total_w = 0.0
@@ -152,7 +151,11 @@ def _blend_clusters(clusters, persons, power):
         n   = len(idx_list)
         ccx = sum((persons[i][0] + persons[i][2]) * 0.5 for i in idx_list) / n
         ccy = sum((persons[i][1] + persons[i][3]) * 0.5 for i in idx_list) / n
-        w   = float(n) ** power
+        if motion_w is None:
+            eff = float(n)
+        else:
+            eff = sum(motion_w[i] for i in idx_list)
+        w   = max(eff, 1e-6) ** power
         cl_info.append((idx_list, w, ccx, ccy))
         total_w += w
         cx_acc  += w * ccx
@@ -162,6 +165,43 @@ def _blend_clusters(clusters, persons, power):
     cx = cx_acc / total_w
     cy = cy_acc / total_w
     return cx, cy, cl_info, max_w
+
+
+def _motion_weights(persons, prev_centres, dt, frame_w,
+                    match_frac, ref_speed_frac, static_floor):
+    """
+    Estimate a per-person motion weight in [static_floor, 1.0] by matching
+    each current detection to its nearest previous-frame centre.
+
+    Returns (weights, centres) where centres is the list of current centres
+    (to be stored as the next frame's prev_centres).
+    """
+    centres = [((p[0] + p[2]) * 0.5, (p[1] + p[3]) * 0.5) for p in persons]
+    if not prev_centres or dt <= 0.0 or dt > 1.0:
+        # No reference — give everyone full weight so behaviour matches the
+        # count-based fallback on the very first frame / after a long gap.
+        return [1.0] * len(persons), centres
+
+    match_px      = match_frac * frame_w
+    match_px_sq   = match_px * match_px
+    ref_speed_px  = ref_speed_frac * frame_w   # pixels / sec
+    weights = []
+    for cx, cy in centres:
+        best_d2 = match_px_sq
+        best    = None
+        for px, py in prev_centres:
+            d2 = (px - cx) ** 2 + (py - cy) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best    = (px, py)
+        if best is None:
+            # New arrival (no match in radius) — treat as fully active.
+            weights.append(1.0)
+            continue
+        speed_px = math.sqrt(best_d2) / dt
+        m = min(1.0, speed_px / max(ref_speed_px, 1.0))
+        weights.append(static_floor + (1.0 - static_floor) * m)
+    return weights, centres
 
 
 # ── Tracker ───────────────────────────────────────────────────────────────────
@@ -187,6 +227,10 @@ class Tracker:
         # EMA-smoothed velocity of the action centre (pixels / second)
         self._vel_x     = 0.0
         self._vel_y     = 0.0
+
+        # Previous-frame person centres (for per-person motion weighting)
+        self._prev_centres = []
+        self._prev_persons_t = None
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -216,6 +260,8 @@ class Tracker:
         # ── No targets at all ─────────────────────────────────────────────────
         if not persons:
             self._prev_cx = self._prev_cy = self._prev_t = None
+            self._prev_centres = []
+            self._prev_persons_t = None
             self._vel_x  *= 0.85
             self._vel_y  *= 0.85
 
@@ -236,15 +282,51 @@ class Tracker:
             self._tilt_on   = False
             return None, None, None, "SEARCHING", _dbg_empty
 
-        # ── Cluster persons into groups, soft-blend by size ───────────────────
-        # All clusters contribute to the target, but each cluster's pull is
-        # weighted by  (cluster_size ** GROUP_POWER). A clearly larger group
-        # dominates, while one person crossing between groups only shifts the
-        # target slightly — no teleporting, smooth and stable on a busy court.
+        # ── Per-person motion weighting ───────────────────────────────────────
+        # Match each current detection to nearest previous-frame centre and
+        # weight by speed: static people sink to MOTION_STATIC_FLOOR, movers
+        # stay at ~1.0. This stops the camera from locking onto a lone
+        # bystander after the action leaves the area.
+        motion_w = None
+        total_motion_w = float(len(persons))
+        if MOTION_WEIGHTING:
+            dt_p = (now - self._prev_persons_t) if self._prev_persons_t else 0.0
+            motion_w, new_centres = _motion_weights(
+                persons, self._prev_centres, dt_p, frame_w,
+                MOTION_MATCH_DIST, MOTION_REF_SPEED, MOTION_STATIC_FLOOR,
+            )
+            self._prev_centres   = new_centres
+            self._prev_persons_t = now
+            total_motion_w = sum(motion_w)
+
+        # If the scene only contains stationary leftovers, refuse to lock on
+        # them — coast briefly, then SEARCH. This is what makes the camera
+        # release a lone static person after a group leaves the frame.
+        if MOTION_WEIGHTING and total_motion_w < MOTION_TOTAL_FLOOR:
+            _dbg_static = {"action_mask": [False] * len(persons),
+                           "lead_px": None, "speed_norm": 0.0, "n_action": 0}
+            self._vel_x *= 0.85
+            self._vel_y *= 0.85
+            self._prev_cx = self._prev_cy = self._prev_t = None
+            if now < self._coast_end and (self._pan_on or self._tilt_on):
+                pv = _vel_profile(self._pan_ema)  if self._pan_on  else 0.0
+                tv = _vel_profile(self._tilt_ema) if self._tilt_on else 0.0
+                if pv == 0.0 and tv == 0.0:
+                    return None, None, None, "COASTING", _dbg_static
+                return pv, tv, None, "COASTING", _dbg_static
+            self._pan_ema  *= (1.0 - EMA_ALPHA)
+            self._tilt_ema *= (1.0 - EMA_ALPHA)
+            self._pan_on    = False
+            self._tilt_on   = False
+            return None, None, None, "SEARCHING", _dbg_static
+
+        # ── Cluster persons into groups, soft-blend by motion-weighted size ──
+        # Each cluster's pull is (sum_of_motion_weights ** GROUP_POWER). A
+        # moving group dominates a static one of the same head-count.
         cluster_dist_px = GROUP_CLUSTER_DIST * frame_w
         clusters        = _cluster_persons(persons, cluster_dist_px)
         blend_cx, blend_cy, cl_info, max_cl_w = _blend_clusters(
-            clusters, persons, GROUP_POWER
+            clusters, persons, GROUP_POWER, motion_w=motion_w
         )
 
         # Refine with action sigma weighting: players nearer the blended
