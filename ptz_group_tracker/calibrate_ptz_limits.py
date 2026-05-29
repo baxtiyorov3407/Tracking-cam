@@ -122,7 +122,7 @@ def _absolute_home(ptz):
         print(f"home (AbsoluteMove) not supported by camera: {e}")
 
 
-def draw_hud(frame, ptz, limits, speed_mult):
+def draw_hud(frame, ptz, limits, speed_mult, status_msg=None, status_ok=True):
     h, w = frame.shape[:2]
     pos  = ptz.get_position()
     vis  = frame.copy()
@@ -144,6 +144,13 @@ def draw_hud(frame, ptz, limits, speed_mult):
                     f"now  pan={p:+.3f}  tilt={t:+.3f}  zoom={z:.3f}    speed={speed_mult:.2f}x",
                     (10, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
 
+    # Bottom-screen status banner (shown after save attempt etc.)
+    if status_msg:
+        col = (0, 200, 0) if status_ok else (0, 80, 255)
+        cv2.rectangle(vis, (0, h - 36), (w, h), (0, 0, 0), -1)
+        cv2.putText(vis, status_msg, (10, h - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
+
     # Right-hand panel: captured limits
     def line(label, v, y, set_):
         col = (0, 255, 0) if set_ else (80, 80, 80)
@@ -163,20 +170,24 @@ def save(limits):
     needed = ["pan_min", "pan_max", "tilt_min", "tilt_max"]
     missing = [k for k in needed if k not in limits]
     if missing:
-        print(f"Missing limits: {missing}. Set them all before saving.")
-        return False
+        msg = f"Cannot save — missing: {', '.join(missing)}"
+        print(msg)
+        return False, msg
     if limits["pan_min"] >= limits["pan_max"]:
-        print("pan_min must be < pan_max. Re-capture LEFT/RIGHT.")
-        return False
+        msg = "Cannot save — pan_min must be < pan_max. Re-capture 1 / 2."
+        print(msg)
+        return False, msg
     if limits["tilt_min"] >= limits["tilt_max"]:
-        print("tilt_min must be < tilt_max. Re-capture TOP/BOTTOM.")
-        return False
+        msg = "Cannot save — tilt_min must be < tilt_max. Re-capture 3 / 4."
+        print(msg)
+        return False, msg
     out = dict(limits)
     out["camera_ip"] = CAM_IP
     out["saved_at"]  = time.strftime("%Y-%m-%d %H:%M:%S")
     OUT_FILE.write_text(json.dumps(out, indent=2))
-    print(f"Saved limits to {OUT_FILE}")
-    return True
+    msg = f"Saved limits to {OUT_FILE}"
+    print(msg)
+    return True, msg
 
 
 def main():
@@ -198,16 +209,21 @@ def main():
     moving_pt  = False
     moving_zm  = False
     speed_mult = 1.0
+    status_msg = None
+    status_ok  = True
+    status_until = 0.0
 
     print("Ready. Use WASD to pan/tilt, Q/E to zoom, [ ] to change speed, "
-          "1-4 to capture limits.")
+          "1-4 to capture limits, ENTER to save.")
 
     while True:
         frame = stream.read()
         if frame is None:
             time.sleep(0.02)
             continue
-        cv2.imshow(win, draw_hud(frame, ptz, limits, speed_mult))
+        # Clear stale status banners after 4 seconds
+        msg = status_msg if time.monotonic() < status_until else None
+        cv2.imshow(win, draw_hud(frame, ptz, limits, speed_mult, msg, status_ok))
         key = cv2.waitKey(15) & 0xFF
         now = time.monotonic()
 
@@ -257,23 +273,39 @@ def main():
             _absolute_home(ptz)
         elif key == ord('x'):
             limits.clear()
-            print("Cleared all captured limits.")
+            status_msg, status_ok, status_until = (
+                "Cleared all captured limits.", True, now + 3.0)
+            print(status_msg)
         elif key in (ord('1'), ord('2'), ord('3'), ord('4')):
             pos = ptz.get_position()
             if pos is None:
-                print("PTZ position not available yet (GetStatus pending).")
+                status_msg = "PTZ position not available yet (GetStatus pending)."
+                status_ok, status_until = False, now + 3.0
+                print(status_msg)
             else:
                 p, t, _ = pos
                 if key == ord('1'):
-                    limits["pan_min"]  = p; print(f"LEFT pan_min  = {p:+.3f}")
+                    limits["pan_min"]  = p
+                    status_msg = f"Captured LEFT  pan_min  = {p:+.3f}"
                 elif key == ord('2'):
-                    limits["pan_max"]  = p; print(f"RIGHT pan_max = {p:+.3f}")
+                    limits["pan_max"]  = p
+                    status_msg = f"Captured RIGHT pan_max  = {p:+.3f}"
                 elif key == ord('3'):
-                    limits["tilt_max"] = t; print(f"TOP tilt_max  = {t:+.3f}")
+                    limits["tilt_max"] = t
+                    status_msg = f"Captured TOP   tilt_max = {t:+.3f}"
                 elif key == ord('4'):
-                    limits["tilt_min"] = t; print(f"BOTTOM tilt_min = {t:+.3f}")
-        elif key == 13:                              # ENTER
-            if save(limits):
+                    limits["tilt_min"] = t
+                    status_msg = f"Captured BOTTOM tilt_min = {t:+.3f}"
+                status_ok, status_until = True, now + 3.0
+                print(status_msg)
+        elif key in (13, 10):                        # ENTER (CR or LF)
+            ok, msg = save(limits)
+            status_msg, status_ok, status_until = msg, ok, now + 5.0
+            if ok:
+                # Render one final frame so the user sees the success banner,
+                # then exit.
+                cv2.imshow(win, draw_hud(frame, ptz, limits, speed_mult, msg, True))
+                cv2.waitKey(800)
                 break
 
     # Cleanup
