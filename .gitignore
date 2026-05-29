@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Calibration / runtime data (machine-specific)
+ptz_group_tracker/court.json
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

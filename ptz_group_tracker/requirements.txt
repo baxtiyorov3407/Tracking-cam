@@ -1,7 +1,7 @@
 # PTZ Group Tracker – Python dependencies
 # Install with:  pip install -r requirements.txt
 
-ultralytics>=8.0.0        # YOLOv8 (includes torch as a dependency)
+onnxruntime>=1.16.0       # NanoDet-Plus ONNX inference (CPU)
 opencv-python>=4.8.0      # RTSP capture + debug visualisation
 onvif-zeep>=0.2.12        # ONVIF PTZ control
-numpy>=1.24.0             # array ops used in tracker
+numpy>=1.24.0             # array ops used in tracker / detector

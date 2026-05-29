@@ -8,14 +8,15 @@ from pathlib import Path
 # Dahua PTZ camera — IP 192.168.0.102
 # RTSP sub-stream: channel=1&subtype=1
 # ONVIF port on Dahua is 80
-RTSP_URL = "rtsp://admin:123456@192.168.0.101:554/cam/realmonitor?channel=1&subtype=1"
-CAM_IP   = "192.168.0.101"
+RTSP_URL = "rtsp://admin:123456@192.168.1.101:554/cam/realmonitor?channel=1&subtype=1"
+CAM_IP   = "192.168.1.101"
 CAM_PORT = 80
 CAM_USER = "admin"
 CAM_PASS = "123456"
 
 # Detection — NanoDet-Plus ONNX  (416x416 = better accuracy than 320, still fast on CPU)
-MODEL_PATH  = Path(r"C:\Tracking cam\ptz_group_tracker\models\nanodet-plus-m_416.onnx")
+# Model is downloaded on first run into a "models" folder next to this file.
+MODEL_PATH  = Path(__file__).resolve().parent / "models" / "nanodet-plus-m_416.onnx"
 MODEL_URL   = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_416.onnx"
 PERSON_CONF = 0.58  # higher = fewer false positives (chairs, signs, etc.)
 NMS_IOU     = 0.55
