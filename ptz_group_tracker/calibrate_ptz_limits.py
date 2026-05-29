@@ -13,6 +13,7 @@ Controls
   A / D      pan  left / right
   Q / E      zoom out / in
   hold key   keep moving;  release  =  stop
+  [  /  ]    decrease / increase manual-drive speed (shown in HUD)
   1          set LEFT  pan limit at current position
   2          set RIGHT pan limit
   3          set TOP   tilt limit
@@ -39,11 +40,23 @@ from ptz_controller import PTZController
 
 OUT_FILE = Path(__file__).resolve().parent / "ptz_limits.json"
 
-# Manual-drive speeds (normalized ONVIF velocity, [-1, 1])
-JOG_PAN_SPEED   = 0.30
-JOG_TILT_SPEED  = 0.25
-JOG_ZOOM_SPEED  = 0.25
-KEY_TIMEOUT_SEC = 0.15   # release inferred when no key seen this long
+# Manual-drive speeds (normalized ONVIF velocity, [-1, 1]).
+# Defaults are intentionally slow so a single tap moves only ~1 degree.
+# Use [ and ] in the tool to scale live.
+JOG_PAN_BASE     = 0.08
+JOG_TILT_BASE    = 0.08
+JOG_ZOOM_BASE    = 0.10
+KEY_TIMEOUT_SEC  = 0.08    # shorter -> single tap = short move
+
+SPEED_MIN        = 0.10
+SPEED_MAX        = 4.00
+SPEED_STEP       = 1.25    # multiplier per [ / ] press
+
+# When the camera is zoomed in, a given normalized velocity rotates the view
+# the same angular amount BUT the apparent on-screen movement is much larger.
+# Scaling pan/tilt by (1 - zoom * ZOOM_SLOWDOWN) keeps the manual feel
+# consistent: 0.0 = no scaling, 0.9 = pan is 10x slower at full zoom.
+ZOOM_SLOWDOWN    = 0.85
 
 
 class StreamReader:
@@ -109,7 +122,7 @@ def _absolute_home(ptz):
         print(f"home (AbsoluteMove) not supported by camera: {e}")
 
 
-def draw_hud(frame, ptz, limits):
+def draw_hud(frame, ptz, limits, speed_mult):
     h, w = frame.shape[:2]
     pos  = ptz.get_position()
     vis  = frame.copy()
@@ -117,7 +130,7 @@ def draw_hud(frame, ptz, limits):
     cv2.rectangle(vis, (0, 0), (w, 110), (0, 0, 0), -1)
     cv2.putText(vis, "PTZ LIMITS CALIBRATION", (10, 24),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-    cv2.putText(vis, "WASD pan/tilt   Q/E zoom   1 LEFT  2 RIGHT  3 TOP  4 BOTTOM",
+    cv2.putText(vis, "WASD pan/tilt   Q/E zoom   [ ] speed   1 LEFT 2 RIGHT 3 TOP 4 BOTTOM",
                 (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
     cv2.putText(vis, "H home   X clear   ENTER save   ESC quit",
                 (10, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
@@ -128,7 +141,7 @@ def draw_hud(frame, ptz, limits):
     else:
         p, t, z = pos
         cv2.putText(vis,
-                    f"now  pan={p:+.3f}  tilt={t:+.3f}  zoom={z:.3f}",
+                    f"now  pan={p:+.3f}  tilt={t:+.3f}  zoom={z:.3f}    speed={speed_mult:.2f}x",
                     (10, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
 
     # Right-hand panel: captured limits
@@ -184,15 +197,17 @@ def main():
     last_key_t = 0.0
     moving_pt  = False
     moving_zm  = False
+    speed_mult = 1.0
 
-    print("Ready. Use WASD to pan/tilt, Q/E to zoom, 1-4 to capture limits.")
+    print("Ready. Use WASD to pan/tilt, Q/E to zoom, [ ] to change speed, "
+          "1-4 to capture limits.")
 
     while True:
         frame = stream.read()
         if frame is None:
             time.sleep(0.02)
             continue
-        cv2.imshow(win, draw_hud(frame, ptz, limits))
+        cv2.imshow(win, draw_hud(frame, ptz, limits, speed_mult))
         key = cv2.waitKey(15) & 0xFF
         now = time.monotonic()
 
@@ -210,19 +225,34 @@ def main():
             print("Quit without saving.")
             break
 
+        # Current effective pan/tilt jog speed, scaled by user multiplier
+        # AND by zoom (so it doesn't feel violent when zoomed in).
+        pos_now = ptz.get_position()
+        zoom_now = pos_now[2] if pos_now is not None else 0.0
+        zoom_scale = max(0.05, 1.0 - ZOOM_SLOWDOWN * zoom_now)
+        pan_sp  = JOG_PAN_BASE  * speed_mult * zoom_scale
+        tilt_sp = JOG_TILT_BASE * speed_mult * zoom_scale
+        zoom_sp = JOG_ZOOM_BASE * speed_mult     # zoom not scaled by zoom
+
         # Motion keys
         if key == ord('w'):
-            ptz.move(0.0,  JOG_TILT_SPEED); moving_pt = True
+            ptz.move(0.0,  tilt_sp); moving_pt = True
         elif key == ord('s'):
-            ptz.move(0.0, -JOG_TILT_SPEED); moving_pt = True
+            ptz.move(0.0, -tilt_sp); moving_pt = True
         elif key == ord('a'):
-            ptz.move(-JOG_PAN_SPEED, 0.0);  moving_pt = True
+            ptz.move(-pan_sp, 0.0);  moving_pt = True
         elif key == ord('d'):
-            ptz.move( JOG_PAN_SPEED, 0.0);  moving_pt = True
+            ptz.move( pan_sp, 0.0);  moving_pt = True
         elif key == ord('q'):
-            _zoom_continuous(ptz, -JOG_ZOOM_SPEED); moving_zm = True
+            _zoom_continuous(ptz, -zoom_sp); moving_zm = True
         elif key == ord('e'):
-            _zoom_continuous(ptz,  JOG_ZOOM_SPEED); moving_zm = True
+            _zoom_continuous(ptz,  zoom_sp); moving_zm = True
+        elif key == ord('['):
+            speed_mult = max(SPEED_MIN, speed_mult / SPEED_STEP)
+            print(f"speed = {speed_mult:.2f}x")
+        elif key == ord(']'):
+            speed_mult = min(SPEED_MAX, speed_mult * SPEED_STEP)
+            print(f"speed = {speed_mult:.2f}x")
         elif key == ord('h'):
             _absolute_home(ptz)
         elif key == ord('x'):
