@@ -18,6 +18,7 @@ from onvif import ONVIFCamera
 from config import (
     CAM_IP, CAM_PORT, CAM_USER, CAM_PASS, PT_MIN_VEL,
     PTZ_LIMITS_FILE, PTZ_LIMITS_ENABLED, PTZ_LIMIT_SOFT_BAND, PTZ_STATUS_HZ,
+    PTZ_DR_MODE, PTZ_DR_SCALE,
 )
 
 _INTERVAL   = 0.08    # seconds between command sends (12.5 Hz)
@@ -65,10 +66,25 @@ class PTZController:
 
         # Position-state poll + limits
         self._limits         = _load_limits()
-        self._position       = None    # (pan, tilt, zoom) or None
+        self._position       = None    # (pan, tilt, zoom) from GetStatus, or None
         self._position_lock  = threading.Lock()
         self._last_status_t  = 0.0
         self._last_hit       = (False, False)  # (pan_hit, tilt_hit) for UI
+
+        # Dead-reckoning state: integrate sent velocity to estimate position
+        # when the camera doesn't report it via GetStatus.
+        self._dr_pan        = 0.0
+        self._dr_tilt       = 0.0
+        self._dr_lock       = threading.Lock()
+        self._dr_last_t     = None
+        # Auto-detect broken GetStatus: count consecutive identical polls.
+        self._status_last   = None
+        self._status_same_n = 0
+        # "on" forces DR from the start; "off" disables it; "auto" enables
+        # only after we see GetStatus returning constant values.
+        self._dr_active     = (PTZ_DR_MODE == "on")
+        if self._dr_active:
+            log.info("PTZ dead-reckoning: forced ON via PTZ_DR_MODE")
 
     # ── public ───────────────────────────────────────────────────────────────
 
@@ -107,9 +123,23 @@ class PTZController:
         self._send_stop()
 
     def get_position(self):
-        """Return last-known (pan, tilt, zoom) normalized, or None."""
+        """Return last-known (pan, tilt, zoom) normalized, or None.
+        Uses dead-reckoned position when GetStatus is broken/disabled."""
+        if self._dr_active:
+            with self._dr_lock:
+                pan, tilt = self._dr_pan, self._dr_tilt
+            with self._position_lock:
+                zoom = self._position[2] if self._position is not None else 0.0
+            return (pan, tilt, zoom)
         with self._position_lock:
             return self._position
+
+    def reset_position(self, pan=0.0, tilt=0.0):
+        """Force the internal dead-reckoned position to (pan, tilt).
+        Useful after an AbsoluteMove home to clear accumulated drift."""
+        with self._dr_lock:
+            self._dr_pan, self._dr_tilt = pan, tilt
+            self._dr_last_t = None
 
     def limits_active(self):
         return self._limits is not None
@@ -179,8 +209,31 @@ class PTZController:
             zoom_now = float(pos.Zoom.x) if pos.Zoom is not None else 0.0
             with self._position_lock:
                 self._position = (pan_now, tilt_now, zoom_now)
+
+            # Auto-detect broken GetStatus: if pan/tilt come back identical
+            # for several polls in a row (e.g. stuck at 1.0), flip to DR.
+            if PTZ_DR_MODE == "auto" and not self._dr_active:
+                if self._status_last is not None and \
+                        abs(pan_now  - self._status_last[0]) < 1e-4 and \
+                        abs(tilt_now - self._status_last[1]) < 1e-4:
+                    self._status_same_n += 1
+                else:
+                    self._status_same_n = 0
+                self._status_last = (pan_now, tilt_now)
+                if self._status_same_n >= 5:
+                    self._dr_active = True
+                    log.warning(
+                        "GetStatus returns constant (%.3f, %.3f) over %d "
+                        "polls — switching to dead reckoning.",
+                        pan_now, tilt_now, self._status_same_n + 1)
         except Exception as e:
             log.debug("GetStatus failed: %s", e)
+            if PTZ_DR_MODE == "auto" and not self._dr_active:
+                self._status_same_n += 1
+                if self._status_same_n >= 5:
+                    self._dr_active = True
+                    log.warning("GetStatus repeatedly failed — "
+                                "switching to dead reckoning.")
 
     def _loop(self):
         last_pan   = None
@@ -204,6 +257,18 @@ class PTZController:
 
                 if abs(pan)  < PT_MIN_VEL: pan  = 0.0
                 if abs(tilt) < PT_MIN_VEL: tilt = 0.0
+
+                # Dead-reckoning: integrate the velocity we're about to send.
+                if PTZ_DR_MODE != "off":
+                    with self._dr_lock:
+                        if self._dr_last_t is not None:
+                            dt = now - self._dr_last_t
+                            if 0.0 < dt < 1.0:
+                                self._dr_pan  = max(-1.0, min(1.0,
+                                    self._dr_pan  + pan  * dt * PTZ_DR_SCALE))
+                                self._dr_tilt = max(-1.0, min(1.0,
+                                    self._dr_tilt + tilt * dt * PTZ_DR_SCALE))
+                        self._dr_last_t = now
 
                 if pan == 0.0 and tilt == 0.0:
                     if was_active:
@@ -231,6 +296,8 @@ class PTZController:
                 was_active = False
                 last_pan = last_tilt = None
                 self._last_hit = (False, False)
+                with self._dr_lock:
+                    self._dr_last_t = None
 
     def _send_stop(self):
         if not self.connected:

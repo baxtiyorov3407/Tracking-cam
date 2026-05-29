@@ -111,8 +111,7 @@ def _zoom_stop(ptz):
 
 
 def _absolute_home(ptz):
-    """Send camera to (0,0). Not all cameras implement AbsoluteMove cleanly;
-    skip silently on error — user can drive manually with WASD."""
+    """Send camera to (0,0) and reset the dead-reckoned position estimate."""
     try:
         ptz._ptz.AbsoluteMove({
             "ProfileToken": ptz._token,
@@ -120,6 +119,12 @@ def _absolute_home(ptz):
         })
     except Exception as e:
         print(f"home (AbsoluteMove) not supported by camera: {e}")
+    # Always zero the dead-reckoned position so the user gets a clean origin
+    # regardless of whether AbsoluteMove succeeded.
+    try:
+        ptz.reset_position(0.0, 0.0)
+    except Exception:
+        pass
 
 
 def draw_hud(frame, ptz, limits, speed_mult, status_msg=None, status_ok=True):
@@ -178,8 +183,13 @@ def save(limits):
     # never matters.
     pmn, pmx = sorted((limits["pan_min"],  limits["pan_max"]))
     tmn, tmx = sorted((limits["tilt_min"], limits["tilt_max"]))
-    if pmn == pmx or tmn == tmx:
-        msg = "Cannot save — pan or tilt limits are identical. Re-capture."
+    # Reject if the two captures are essentially the same value — usually
+    # means the camera's GetStatus isn't reporting position changes.
+    EPS = 0.005
+    if abs(pmx - pmn) < EPS or abs(tmx - tmn) < EPS:
+        msg = (f"Cannot save — captures too close. "
+               f"pan=[{pmn:+.4f},{pmx:+.4f}] tilt=[{tmn:+.4f},{tmx:+.4f}]. "
+               f"Camera may not report PTZ position via GetStatus.")
         print(msg)
         return False, msg
     out = {"pan_min": pmn, "pan_max": pmx, "tilt_min": tmn, "tilt_max": tmx}

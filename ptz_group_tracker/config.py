@@ -193,6 +193,21 @@ PTZ_LIMITS_ENABLED    = True
 PTZ_LIMIT_SOFT_BAND   = 0.05
 PTZ_STATUS_HZ         = 5.0
 
+# Dead-reckoning fallback: some cameras (this Dahua included) do not report
+# real PTZ position via ONVIF GetStatus — they return a constant value like
+# (1.0, 1.0). When the controller detects this, it integrates the velocity
+# commands it sends to estimate position internally. Drift is small over a
+# calibration session (minutes); pressing H in the calibrator re-zeroes it.
+#
+# PTZ_DR_MODE  — "auto" (default, switch on when GetStatus looks broken)
+#                "on"   (always integrate; ignore GetStatus position)
+#                "off"  (never integrate; trust GetStatus only)
+# PTZ_DR_SCALE — multiplier from ONVIF velocity*time to position units.
+#                Pure 1:1 in normalized space. Adjust if your camera's
+#                physical velocity differs from the normalized command.
+PTZ_DR_MODE   = "auto"
+PTZ_DR_SCALE  = 1.0
+
 # Application
 ENABLE_PTZ  = True
 SHOW_WINDOW = True
