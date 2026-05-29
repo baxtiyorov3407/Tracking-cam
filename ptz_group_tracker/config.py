@@ -21,17 +21,17 @@ CAM_PASS = "123456"
 # at 10-14 fps, which is plenty for PTZ tracking.
 MODEL_PATH  = Path(__file__).resolve().parent / "models" / "nanodet-plus-m-1.5x_416.onnx"
 MODEL_URL   = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m-1.5x_416.onnx"
-PERSON_CONF = 0.40  # confidence threshold; lower = catches more weak/partial detections
-NMS_IOU     = 0.60  # higher = keeps overlapping players in crowded scenes
+PERSON_CONF = 0.55  # confidence threshold; raise to reject non-person objects
+NMS_IOU     = 0.55  # NMS overlap threshold
 
 # Person box sanity filters — reject detections that are clearly not a person.
 # Measured in pixels on the *original* (pre-letterbox) frame.
-#  PERSON_MIN_HEIGHT  — boxes shorter than this are noise. 22 px at 1080p
-#                       = ~2% of frame height — catches distant players too.
-#  PERSON_MAX_ASPECT  — width/height ratio cap. 1.10 keeps running / diving /
-#                       falling poses while still rejecting horizontal blobs.
-PERSON_MIN_HEIGHT = 22    # pixels
-PERSON_MAX_ASPECT = 1.10  # w/h; reject if box is wider than this ratio
+#  PERSON_MIN_HEIGHT  — boxes shorter than this are noise. 30 px at 1080p
+#                       still catches mid-distance players, rejects tiny blobs.
+#  PERSON_MAX_ASPECT  — width/height ratio cap. 0.90 keeps most running poses
+#                       while rejecting wide horizontal blobs (benches, ads).
+PERSON_MIN_HEIGHT = 30    # pixels
+PERSON_MAX_ASPECT = 0.90  # w/h; reject if box is wider than this ratio
 
 # Low-light / noise-reduction — frame pre-processing
 #  CLAHE_ENABLED  — apply CLAHE contrast enhancement on the L channel (LAB)
@@ -53,8 +53,8 @@ CLAHE_GRID    = 8
 #
 #  DETECTION_MAX_AGE  — frames a confirmed detection is kept alive without a
 #    new match (brief occlusion tolerance) before it is dropped.
-DETECTION_MIN_HITS = 2
-DETECTION_MAX_AGE  = 8
+DETECTION_MIN_HITS = 3
+DETECTION_MAX_AGE  = 6
 
 
 # ===================== TRACKING SETTINGS (ORDERED) =====================
