@@ -173,15 +173,16 @@ def save(limits):
         msg = f"Cannot save — missing: {', '.join(missing)}"
         print(msg)
         return False, msg
-    if limits["pan_min"] >= limits["pan_max"]:
-        msg = "Cannot save — pan_min must be < pan_max. Re-capture 1 / 2."
+    # The 1/2/3/4 labels are just mnemonics; the camera's axis sign may be
+    # reversed from "left = lower number". Auto-sort so order of capture
+    # never matters.
+    pmn, pmx = sorted((limits["pan_min"],  limits["pan_max"]))
+    tmn, tmx = sorted((limits["tilt_min"], limits["tilt_max"]))
+    if pmn == pmx or tmn == tmx:
+        msg = "Cannot save — pan or tilt limits are identical. Re-capture."
         print(msg)
         return False, msg
-    if limits["tilt_min"] >= limits["tilt_max"]:
-        msg = "Cannot save — tilt_min must be < tilt_max. Re-capture 3 / 4."
-        print(msg)
-        return False, msg
-    out = dict(limits)
+    out = {"pan_min": pmn, "pan_max": pmx, "tilt_min": tmn, "tilt_max": tmx}
     out["camera_ip"] = CAM_IP
     out["saved_at"]  = time.strftime("%Y-%m-%d %H:%M:%S")
     OUT_FILE.write_text(json.dumps(out, indent=2))
