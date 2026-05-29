@@ -61,20 +61,24 @@ DETECTION_MAX_AGE  = 4
 #       alpha = min(EMA_ALPHA_MAX, EMA_ALPHA + speed_norm * EMA_ALPHA_SCALE)
 # so EMA_ALPHA is the *base* (slow-action) value and EMA_ALPHA_MAX is the
 # ceiling allowed during fast action.  Keep EMA_ALPHA <= EMA_ALPHA_MAX.
-EMA_ALPHA        = 0.16   # Base smoothing (must be <= EMA_ALPHA_MAX)
-EMA_ALPHA_MAX    = 0.24   # Ceiling on fast action
-EMA_ALPHA_SCALE  = 0.08   # Speed-to-alpha multiplier (adaptive boost)
-VEL_EMA_ALPHA    = 0.10   # Smoothing for velocity estimate
+EMA_ALPHA        = 0.20   # Base smoothing (must be <= EMA_ALPHA_MAX)
+EMA_ALPHA_MAX    = 0.32   # Ceiling on fast action
+EMA_ALPHA_SCALE  = 0.10   # Speed-to-alpha multiplier (adaptive boost)
+VEL_EMA_ALPHA    = 0.18   # Smoothing for velocity estimate
 
 # --- Velocity profile (how fast camera moves) ---
-MAX_VEL    = 0.5    # Moderate cap for stability (raise if too slow)
+MAX_VEL    = 0.65   # Top motor speed (raised for snappier follow)
 PT_MIN_VEL = 0.05   # Slowest command sent
-SLOW_ZONE  = 1.0    # Start slowing as soon as off-center (very smooth, no overshoot)
-DEADBAND   = 0.38   # Wide stop zone for fast PTZ (stops easily)
-START_BAND = 0.2    # Restart only when error exceeds 20% (quicker re-centering)
+SLOW_ZONE  = 0.65   # Hit MAX_VEL when error exceeds this; ramp below it
+DEADBAND   = 0.28   # Stop zone
+START_BAND = 0.18   # Restart when error exceeds this
 
 # --- Prediction and lead ---
-LEAD_TIME  = 0.0    # Seconds to predict ahead (0 = no lead)
+# Always-on baseline lead: project the action centre forward by LEAD_TIME
+# seconds along its smoothed velocity. This is the anticipation a human
+# operator naturally applies. MOTION_LEAD_TIME (below) is an additional
+# burst applied only when there's a coherent directional consensus.
+LEAD_TIME  = 0.35
 
 # --- Action weighting ---
 ACTION_SIGMA        = 0.30   # How wide the "action zone" is (fraction of frame width)
@@ -136,9 +140,9 @@ MOTION_TOTAL_FLOOR   = 0.35
 # MOTION_COHERENCE_MIN   — minimum directional agreement (|Σv|/Σ|v|) needed
 #                          before any lead is applied.
 MOTION_MOVER_THRESHOLD = 0.45
-MOTION_CONSENSUS_FRAC  = 0.50
-MOTION_LEAD_TIME       = 0.8
-MOTION_COHERENCE_MIN   = 0.35
+MOTION_CONSENSUS_FRAC  = 0.30
+MOTION_LEAD_TIME       = 1.0
+MOTION_COHERENCE_MIN   = 0.30
 
 # --- Pan/tilt coordination ---
 PAN_PRIORITY_SCALE  = 1.2    # How strongly fast pan suppresses tilt EMA alpha

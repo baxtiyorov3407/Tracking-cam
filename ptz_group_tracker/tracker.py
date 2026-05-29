@@ -303,30 +303,44 @@ class Tracker:
             self._prev_persons_t = now
             total_motion_w = sum(motion_w)
 
-        # ── Directional consensus override ────────────────────────────────────
-        # If at least MOTION_CONSENSUS_FRAC of detections are actively
-        # moving, drop the statics from the blend (set their weight to 0)
-        # and remember the mean mover velocity for a lead offset below.
+        # ── Directional consensus (smooth blend, not a hard switch) ──────────
+        # Compute a continuous strength in [0,1] from how many people are
+        # moving and how aligned their velocities are. The strength then
+        # smoothly:
+        #   * reduces the weight of static people in the target blend,
+        #   * scales an extra lead offset along the movers' mean velocity.
+        # No hard threshold = no jerk when one person crosses the line.
         consensus_vx = consensus_vy = 0.0
-        consensus    = False
+        consensus_strength = 0.0
         if MOTION_WEIGHTING and motion_w is not None and len(persons) >= 2:
             movers = [i for i, w in enumerate(motion_w)
                       if w >= MOTION_MOVER_THRESHOLD]
-            if len(movers) / len(persons) >= MOTION_CONSENSUS_FRAC \
-                    and len(movers) >= 2:
-                # Coherence: how aligned the movers' velocities are.
+            if len(movers) >= 2:
+                moving_frac = len(movers) / len(persons)
                 sum_vx = sum(person_vels[i][0] for i in movers)
                 sum_vy = sum(person_vels[i][1] for i in movers)
                 sum_sp = sum(math.hypot(*person_vels[i]) for i in movers)
                 if sum_sp > 1e-6:
                     coherence = math.hypot(sum_vx, sum_vy) / sum_sp
-                    if coherence >= MOTION_COHERENCE_MIN:
-                        consensus    = True
+                    # Ramp each factor from its MIN value to 1.0.
+                    f_frac = max(0.0, min(1.0,
+                        (moving_frac - MOTION_CONSENSUS_FRAC)
+                        / max(1e-6, 1.0 - MOTION_CONSENSUS_FRAC)))
+                    f_coh  = max(0.0, min(1.0,
+                        (coherence - MOTION_COHERENCE_MIN)
+                        / max(1e-6, 1.0 - MOTION_COHERENCE_MIN)))
+                    consensus_strength = f_frac * f_coh
+                    if consensus_strength > 0.0:
                         consensus_vx = sum_vx / len(movers)
                         consensus_vy = sum_vy / len(movers)
-                        # Zero out static people so they don't dilute target.
-                        motion_w = [w if i in set(movers) else 0.0
-                                    for i, w in enumerate(motion_w)]
+                        # Fade static people's weight smoothly toward zero
+                        # as consensus grows; never a hard drop.
+                        mover_set = set(movers)
+                        motion_w = [
+                            w if i in mover_set
+                            else w * (1.0 - consensus_strength)
+                            for i, w in enumerate(motion_w)
+                        ]
                         total_motion_w = sum(motion_w)
 
         # If the scene only contains stationary leftovers, refuse to lock on
@@ -403,22 +417,17 @@ class Tracker:
             overflow_norm = min(1.0, overflow / max(1e-6, 1.0 - TILT_BIAS_THRESHOLD))
 
         # ── Lead-prediction target ────────────────────────────────────────────
-        # Both pan and tilt lead are suppressed when overflowing. When the
-        # consensus override fired this frame, also apply MOTION_LEAD_TIME
-        # along the movers' mean velocity so the camera anticipates the
-        # break instead of chasing the receding centroid.
-        close_lead = LEAD_TIME * (1.0 - overflow_norm)
-        lead_vx, lead_vy = self._vel_x, self._vel_y
-        if consensus:
-            extra = MOTION_LEAD_TIME * (1.0 - overflow_norm)
-            lead_cx_base = cx + extra * consensus_vx
-            lead_cy_base = cy + extra * consensus_vy
-        else:
-            lead_cx_base, lead_cy_base = cx, cy
-        lead_cx = max(0.0, min(float(frame_w),
-                               lead_cx_base + close_lead * lead_vx))
-        lead_cy = max(0.0, min(float(frame_h),
-                               lead_cy_base + close_lead * lead_vy))
+        # Two lead components, both suppressed when the subject overflows:
+        #   * Baseline LEAD_TIME along the smoothed action-centre velocity
+        #     — always on, acts as natural anticipation / look-space.
+        #   * MOTION_LEAD_TIME scaled by consensus_strength along the
+        #     movers' mean velocity — anticipates a coherent break early.
+        base_lead = LEAD_TIME * (1.0 - overflow_norm)
+        extra_lead = MOTION_LEAD_TIME * consensus_strength * (1.0 - overflow_norm)
+        target_cx = cx + base_lead * self._vel_x + extra_lead * consensus_vx
+        target_cy = cy + base_lead * self._vel_y + extra_lead * consensus_vy
+        lead_cx = max(0.0, min(float(frame_w), target_cx))
+        lead_cy = max(0.0, min(float(frame_h), target_cy))
 
         # ── Normalised pan/tilt error relative to frame centre ────────────────
         pan_err  =  (lead_cx - frame_w * 0.5) / (frame_w * 0.5)
