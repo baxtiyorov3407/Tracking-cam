@@ -208,6 +208,23 @@ PTZ_STATUS_HZ         = 5.0
 PTZ_DR_MODE   = "auto"
 PTZ_DR_SCALE  = 1.0
 
+# Home preset: at startup main.py sends the camera to this preset number
+# (defined in your camera's web UI) so that the dead-reckoned position
+# origin matches the same physical pose every run. The calibrator's H key
+# also uses it so the calibration origin and runtime origin are identical.
+#
+# How to set up:
+#   1. In the camera's web UI → PTZ control, drive the camera to the pose
+#      you want as "home" (typically: facing center court, mid-zoom).
+#   2. In the Preset dropdown, select 1, click Add (추가) to save the
+#      current position as preset 1.
+#   3. Re-run calibrate_ptz_limits.py: pressing H now jumps to that pose.
+#   4. Re-run main.py: same pose at startup.
+#
+# Set to None to disable preset homing (falls back to AbsoluteMove(0,0)).
+PTZ_HOME_PRESET    = 1
+PTZ_HOME_WAIT_SEC  = 4.0   # how long to wait for the preset move to finish
+
 # Application
 ENABLE_PTZ  = True
 SHOW_WINDOW = True

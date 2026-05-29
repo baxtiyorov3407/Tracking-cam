@@ -19,6 +19,7 @@ from config import (
     CAM_IP, CAM_PORT, CAM_USER, CAM_PASS, PT_MIN_VEL,
     PTZ_LIMITS_FILE, PTZ_LIMITS_ENABLED, PTZ_LIMIT_SOFT_BAND, PTZ_STATUS_HZ,
     PTZ_DR_MODE, PTZ_DR_SCALE,
+    PTZ_HOME_PRESET, PTZ_HOME_WAIT_SEC,
 )
 
 _INTERVAL   = 0.08    # seconds between command sends (12.5 Hz)
@@ -141,34 +142,51 @@ class PTZController:
             self._dr_pan, self._dr_tilt = pan, tilt
             self._dr_last_t = None
 
-    def home_to_origin(self, wait_sec=3.0):
-        """Send the camera to absolute (0,0) and reset dead-reckoning.
+    def home_to_origin(self, wait_sec=None):
+        """Send the camera to its home pose and reset dead-reckoning.
 
-        Used at program startup so that the dead-reckoned position estimate
-        matches the same physical origin that was used during calibration
-        (the H key in calibrate_ptz_limits.py also sends AbsoluteMove(0,0)
-        and resets DR).
+        Prefers GotoPreset (reliable on cameras that don't implement
+        AbsoluteMove well), falls back to AbsoluteMove(0,0). Either way,
+        the dead-reckoned position is zeroed afterwards so the calibration
+        origin and runtime origin match.
 
-        Returns True if AbsoluteMove was accepted, False otherwise. Even
-        on failure the DR position is still zeroed so the user can manually
-        re-center the camera and the limits will then be consistent.
+        Returns True if a home command was accepted, False otherwise.
         """
         if not self.connected:
             return False
+        if wait_sec is None:
+            wait_sec = PTZ_HOME_WAIT_SEC
         ok = False
-        try:
-            self._ptz.AbsoluteMove({
-                "ProfileToken": self._token,
-                "Position": {"PanTilt": {"x": 0.0, "y": 0.0}},
-            })
-            ok = True
-            log.info("Homing camera to absolute (0,0) … waiting %.1fs",
-                     wait_sec)
+
+        if PTZ_HOME_PRESET is not None:
+            try:
+                self._ptz.GotoPreset({
+                    "ProfileToken": self._token,
+                    "PresetToken":  str(PTZ_HOME_PRESET),
+                })
+                ok = True
+                log.info("Homing camera to preset %s … waiting %.1fs",
+                         PTZ_HOME_PRESET, wait_sec)
+            except Exception as e:
+                log.warning("GotoPreset(%s) failed (%s) — trying AbsoluteMove",
+                            PTZ_HOME_PRESET, e)
+
+        if not ok:
+            try:
+                self._ptz.AbsoluteMove({
+                    "ProfileToken": self._token,
+                    "Position": {"PanTilt": {"x": 0.0, "y": 0.0}},
+                })
+                ok = True
+                log.info("Homing camera to absolute (0,0) … waiting %.1fs",
+                         wait_sec)
+            except Exception as e:
+                log.warning("AbsoluteMove home failed (%s) — PTZ limits "
+                            "may not match physical position. Manually "
+                            "centre the camera before tracking.", e)
+
+        if ok:
             time.sleep(max(0.0, wait_sec))
-        except Exception as e:
-            log.warning("AbsoluteMove home failed (%s) — "
-                        "PTZ limits may not match physical position. "
-                        "Manually centre the camera before tracking.", e)
         self.reset_position(0.0, 0.0)
         return ok
 
