@@ -14,24 +14,17 @@ CAM_PORT = 80
 CAM_USER = "admin"
 CAM_PASS = "123456"
 
-# Detection — NanoDet-Plus 1.5x ONNX (416x416, COCO mAP 34.1 vs 30.4 for the
-# base model — noticeably better recall on partially-visible / small players).
-# Model is downloaded on first run into a "models" folder next to this file.
-# CPU inference: ~70-100 ms (vs ~35-55 ms for the base model). Still real-time
-# at 10-14 fps, which is plenty for PTZ tracking.
-MODEL_PATH  = Path(__file__).resolve().parent / "models" / "nanodet-plus-m-1.5x_416.onnx"
-MODEL_URL   = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m-1.5x_416.onnx"
-PERSON_CONF = 0.55  # confidence threshold; raise to reject non-person objects
-NMS_IOU     = 0.55  # NMS overlap threshold
+# Detection — NanoDet-Plus ONNX (416x416, COCO mAP ~30.4). Reverted from the
+# 1.5x variant to the baseline model that historically worked best.
+MODEL_PATH  = Path(__file__).resolve().parent / "models" / "nanodet-plus-m_416.onnx"
+MODEL_URL   = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_416.onnx"
+PERSON_CONF = 0.58  # higher = fewer false positives (chairs, signs, etc.)
+NMS_IOU     = 0.55
 
 # Person box sanity filters — reject detections that are clearly not a person.
 # Measured in pixels on the *original* (pre-letterbox) frame.
-#  PERSON_MIN_HEIGHT  — boxes shorter than this are noise. 30 px at 1080p
-#                       still catches mid-distance players, rejects tiny blobs.
-#  PERSON_MAX_ASPECT  — width/height ratio cap. 0.90 keeps most running poses
-#                       while rejecting wide horizontal blobs (benches, ads).
-PERSON_MIN_HEIGHT = 30    # pixels
-PERSON_MAX_ASPECT = 0.90  # w/h; reject if box is wider than this ratio
+PERSON_MIN_HEIGHT = 32    # pixels
+PERSON_MAX_ASPECT = 0.85  # w/h; reject if box is wider than this ratio
 
 # Low-light / noise-reduction — frame pre-processing
 #  CLAHE_ENABLED  — apply CLAHE contrast enhancement on the L channel (LAB)
@@ -54,7 +47,7 @@ CLAHE_GRID    = 8
 #  DETECTION_MAX_AGE  — frames a confirmed detection is kept alive without a
 #    new match (brief occlusion tolerance) before it is dropped.
 DETECTION_MIN_HITS = 3
-DETECTION_MAX_AGE  = 6
+DETECTION_MAX_AGE  = 4
 
 
 # ===================== TRACKING SETTINGS (ORDERED) =====================
@@ -64,24 +57,20 @@ DETECTION_MAX_AGE  = 6
 #       alpha = min(EMA_ALPHA_MAX, EMA_ALPHA + speed_norm * EMA_ALPHA_SCALE)
 # so EMA_ALPHA is the *base* (slow-action) value and EMA_ALPHA_MAX is the
 # ceiling allowed during fast action.  Keep EMA_ALPHA <= EMA_ALPHA_MAX.
-EMA_ALPHA        = 0.20   # Base smoothing (must be <= EMA_ALPHA_MAX)
-EMA_ALPHA_MAX    = 0.32   # Ceiling on fast action
-EMA_ALPHA_SCALE  = 0.10   # Speed-to-alpha multiplier (adaptive boost)
-VEL_EMA_ALPHA    = 0.18   # Smoothing for velocity estimate
+EMA_ALPHA        = 0.16   # Base smoothing (must be <= EMA_ALPHA_MAX)
+EMA_ALPHA_MAX    = 0.24   # Ceiling on fast action
+EMA_ALPHA_SCALE  = 0.08   # Speed-to-alpha multiplier (adaptive boost)
+VEL_EMA_ALPHA    = 0.10   # Smoothing for velocity estimate
 
 # --- Velocity profile (how fast camera moves) ---
-MAX_VEL    = 0.65   # Top motor speed (raised for snappier follow)
+MAX_VEL    = 0.5    # Moderate cap for stability (raise if too slow)
 PT_MIN_VEL = 0.05   # Slowest command sent
-SLOW_ZONE  = 0.65   # Hit MAX_VEL when error exceeds this; ramp below it
-DEADBAND   = 0.28   # Stop zone
-START_BAND = 0.18   # Restart when error exceeds this
+SLOW_ZONE  = 1.0    # Start slowing as soon as off-center (very smooth, no overshoot)
+DEADBAND   = 0.38   # Wide stop zone for fast PTZ (stops easily)
+START_BAND = 0.2    # Restart only when error exceeds 20% (quicker re-centering)
 
 # --- Prediction and lead ---
-# Always-on baseline lead: project the action centre forward by LEAD_TIME
-# seconds along its smoothed velocity. This is the anticipation a human
-# operator naturally applies. MOTION_LEAD_TIME (below) is an additional
-# burst applied only when there's a coherent directional consensus.
-LEAD_TIME  = 0.35
+LEAD_TIME  = 0.0    # Seconds to predict ahead (0 = no lead)
 
 # --- Action weighting ---
 ACTION_SIGMA        = 0.30   # How wide the "action zone" is (fraction of frame width)
@@ -122,7 +111,7 @@ GROUP_POWER         = 3.0
 # MOTION_TOTAL_FLOOR     — if the SUM of motion weights across all detections
 #   is below this, the tracker treats the scene as "no real action" and enters
 #   coast/search instead of locking on whoever's left.
-MOTION_WEIGHTING     = True
+MOTION_WEIGHTING     = False   # reverted to v2 count-based clustering
 MOTION_STATIC_FLOOR  = 0.10
 MOTION_REF_SPEED     = 0.15
 MOTION_MATCH_DIST    = 0.10
