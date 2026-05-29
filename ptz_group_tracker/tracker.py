@@ -31,6 +31,8 @@ from config import (
     GROUP_CLUSTER_DIST, GROUP_POWER,
     MOTION_WEIGHTING, MOTION_STATIC_FLOOR, MOTION_REF_SPEED,
     MOTION_MATCH_DIST, MOTION_TOTAL_FLOOR,
+    MOTION_MOVER_THRESHOLD, MOTION_CONSENSUS_FRAC,
+    MOTION_LEAD_TIME, MOTION_COHERENCE_MIN,
 )
 
 _PADDING = 0.06   # fractional padding around the action bounding box
@@ -173,19 +175,17 @@ def _motion_weights(persons, prev_centres, dt, frame_w,
     Estimate a per-person motion weight in [static_floor, 1.0] by matching
     each current detection to its nearest previous-frame centre.
 
-    Returns (weights, centres) where centres is the list of current centres
-    (to be stored as the next frame's prev_centres).
+    Returns (weights, centres, velocities) where velocities[i] is the
+    estimated (vx, vy) in pixels/sec for person i (zero if no match).
     """
     centres = [((p[0] + p[2]) * 0.5, (p[1] + p[3]) * 0.5) for p in persons]
     if not prev_centres or dt <= 0.0 or dt > 1.0:
-        # No reference — give everyone full weight so behaviour matches the
-        # count-based fallback on the very first frame / after a long gap.
-        return [1.0] * len(persons), centres
+        return [1.0] * len(persons), centres, [(0.0, 0.0)] * len(persons)
 
     match_px      = match_frac * frame_w
     match_px_sq   = match_px * match_px
-    ref_speed_px  = ref_speed_frac * frame_w   # pixels / sec
-    weights = []
+    ref_speed_px  = ref_speed_frac * frame_w
+    weights, vels = [], []
     for cx, cy in centres:
         best_d2 = match_px_sq
         best    = None
@@ -195,13 +195,16 @@ def _motion_weights(persons, prev_centres, dt, frame_w,
                 best_d2 = d2
                 best    = (px, py)
         if best is None:
-            # New arrival (no match in radius) — treat as fully active.
             weights.append(1.0)
+            vels.append((0.0, 0.0))
             continue
+        vx = (cx - best[0]) / dt
+        vy = (cy - best[1]) / dt
         speed_px = math.sqrt(best_d2) / dt
         m = min(1.0, speed_px / max(ref_speed_px, 1.0))
         weights.append(static_floor + (1.0 - static_floor) * m)
-    return weights, centres
+        vels.append((vx, vy))
+    return weights, centres, vels
 
 
 # ── Tracker ───────────────────────────────────────────────────────────────────
@@ -288,16 +291,43 @@ class Tracker:
         # stay at ~1.0. This stops the camera from locking onto a lone
         # bystander after the action leaves the area.
         motion_w = None
+        person_vels = [(0.0, 0.0)] * len(persons)
         total_motion_w = float(len(persons))
         if MOTION_WEIGHTING:
             dt_p = (now - self._prev_persons_t) if self._prev_persons_t else 0.0
-            motion_w, new_centres = _motion_weights(
+            motion_w, new_centres, person_vels = _motion_weights(
                 persons, self._prev_centres, dt_p, frame_w,
                 MOTION_MATCH_DIST, MOTION_REF_SPEED, MOTION_STATIC_FLOOR,
             )
             self._prev_centres   = new_centres
             self._prev_persons_t = now
             total_motion_w = sum(motion_w)
+
+        # ── Directional consensus override ────────────────────────────────────
+        # If at least MOTION_CONSENSUS_FRAC of detections are actively
+        # moving, drop the statics from the blend (set their weight to 0)
+        # and remember the mean mover velocity for a lead offset below.
+        consensus_vx = consensus_vy = 0.0
+        consensus    = False
+        if MOTION_WEIGHTING and motion_w is not None and len(persons) >= 2:
+            movers = [i for i, w in enumerate(motion_w)
+                      if w >= MOTION_MOVER_THRESHOLD]
+            if len(movers) / len(persons) >= MOTION_CONSENSUS_FRAC \
+                    and len(movers) >= 2:
+                # Coherence: how aligned the movers' velocities are.
+                sum_vx = sum(person_vels[i][0] for i in movers)
+                sum_vy = sum(person_vels[i][1] for i in movers)
+                sum_sp = sum(math.hypot(*person_vels[i]) for i in movers)
+                if sum_sp > 1e-6:
+                    coherence = math.hypot(sum_vx, sum_vy) / sum_sp
+                    if coherence >= MOTION_COHERENCE_MIN:
+                        consensus    = True
+                        consensus_vx = sum_vx / len(movers)
+                        consensus_vy = sum_vy / len(movers)
+                        # Zero out static people so they don't dilute target.
+                        motion_w = [w if i in set(movers) else 0.0
+                                    for i, w in enumerate(motion_w)]
+                        total_motion_w = sum(motion_w)
 
         # If the scene only contains stationary leftovers, refuse to lock on
         # them — coast briefly, then SEARCH. This is what makes the camera
@@ -373,12 +403,22 @@ class Tracker:
             overflow_norm = min(1.0, overflow / max(1e-6, 1.0 - TILT_BIAS_THRESHOLD))
 
         # ── Lead-prediction target ────────────────────────────────────────────
-        # Both pan and tilt lead are suppressed when overflowing.
-        # When a person is very close, a tiny physical movement = huge pixel
-        # velocity, so predicting ahead causes overshoot in both axes.
+        # Both pan and tilt lead are suppressed when overflowing. When the
+        # consensus override fired this frame, also apply MOTION_LEAD_TIME
+        # along the movers' mean velocity so the camera anticipates the
+        # break instead of chasing the receding centroid.
         close_lead = LEAD_TIME * (1.0 - overflow_norm)
-        lead_cx = max(0.0, min(float(frame_w), cx + close_lead * self._vel_x))
-        lead_cy = max(0.0, min(float(frame_h), cy + close_lead * self._vel_y))
+        lead_vx, lead_vy = self._vel_x, self._vel_y
+        if consensus:
+            extra = MOTION_LEAD_TIME * (1.0 - overflow_norm)
+            lead_cx_base = cx + extra * consensus_vx
+            lead_cy_base = cy + extra * consensus_vy
+        else:
+            lead_cx_base, lead_cy_base = cx, cy
+        lead_cx = max(0.0, min(float(frame_w),
+                               lead_cx_base + close_lead * lead_vx))
+        lead_cy = max(0.0, min(float(frame_h),
+                               lead_cy_base + close_lead * lead_vy))
 
         # ── Normalised pan/tilt error relative to frame centre ────────────────
         pan_err  =  (lead_cx - frame_w * 0.5) / (frame_w * 0.5)

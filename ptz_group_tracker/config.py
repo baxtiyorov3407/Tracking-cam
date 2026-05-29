@@ -121,6 +121,25 @@ MOTION_REF_SPEED     = 0.15
 MOTION_MATCH_DIST    = 0.10
 MOTION_TOTAL_FLOOR   = 0.35
 
+# --- Directional consensus (anticipate a group break) ---
+# When at least MOTION_CONSENSUS_FRAC of detections are actively moving
+# (motion weight >= MOTION_MOVER_THRESHOLD), the static people are dropped
+# from the target blend entirely and a lead offset is applied in the
+# direction of the movers' average velocity. This is what lets the camera
+# start panning as soon as ~half the players break, instead of waiting for
+# the centroid of everyone (including stragglers) to drift.
+#
+# MOTION_MOVER_THRESHOLD — motion weight above which a person is "moving".
+# MOTION_CONSENSUS_FRAC  — fraction of movers that triggers consensus mode.
+# MOTION_LEAD_TIME       — seconds to project the action centre ahead when
+#                          consensus is reached (scales with coherence).
+# MOTION_COHERENCE_MIN   — minimum directional agreement (|Σv|/Σ|v|) needed
+#                          before any lead is applied.
+MOTION_MOVER_THRESHOLD = 0.45
+MOTION_CONSENSUS_FRAC  = 0.50
+MOTION_LEAD_TIME       = 0.8
+MOTION_COHERENCE_MIN   = 0.35
+
 # --- Pan/tilt coordination ---
 PAN_PRIORITY_SCALE  = 1.2    # How strongly fast pan suppresses tilt EMA alpha
 
