@@ -14,10 +14,13 @@ CAM_PORT = 80
 CAM_USER = "admin"
 CAM_PASS = "123456"
 
-# Detection — NanoDet-Plus ONNX  (416x416 = better accuracy than 320, still fast on CPU)
+# Detection — NanoDet-Plus 1.5x ONNX (416x416, COCO mAP 34.1 vs 30.4 for the
+# base model — noticeably better recall on partially-visible / small players).
 # Model is downloaded on first run into a "models" folder next to this file.
-MODEL_PATH  = Path(__file__).resolve().parent / "models" / "nanodet-plus-m_416.onnx"
-MODEL_URL   = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_416.onnx"
+# CPU inference: ~70-100 ms (vs ~35-55 ms for the base model). Still real-time
+# at 10-14 fps, which is plenty for PTZ tracking.
+MODEL_PATH  = Path(__file__).resolve().parent / "models" / "nanodet-plus-m-1.5x_416.onnx"
+MODEL_URL   = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m-1.5x_416.onnx"
 PERSON_CONF = 0.40  # confidence threshold; lower = catches more weak/partial detections
 NMS_IOU     = 0.60  # higher = keeps overlapping players in crowded scenes
 
