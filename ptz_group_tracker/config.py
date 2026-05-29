@@ -18,17 +18,17 @@ CAM_PASS = "123456"
 # Model is downloaded on first run into a "models" folder next to this file.
 MODEL_PATH  = Path(__file__).resolve().parent / "models" / "nanodet-plus-m_416.onnx"
 MODEL_URL   = "https://github.com/RangiLyu/nanodet/releases/download/v1.0.0-alpha-1/nanodet-plus-m_416.onnx"
-PERSON_CONF = 0.58  # higher = fewer false positives (chairs, signs, etc.)
-NMS_IOU     = 0.55
+PERSON_CONF = 0.40  # confidence threshold; lower = catches more weak/partial detections
+NMS_IOU     = 0.60  # higher = keeps overlapping players in crowded scenes
 
 # Person box sanity filters — reject detections that are clearly not a person.
 # Measured in pixels on the *original* (pre-letterbox) frame.
-#  PERSON_MIN_HEIGHT  — boxes shorter than this are noise (e.g. far-away objects
-#                       mistaken for persons). Set ~3% of frame height at 1080p = 32 px.
-#  PERSON_MAX_ASPECT  — width/height ratio cap. A standing person is never wider
-#                       than tall; 0.85 rejects horizontal blobs (benches, ads).
-PERSON_MIN_HEIGHT = 32    # pixels
-PERSON_MAX_ASPECT = 0.85  # w/h; reject if box is wider than this ratio
+#  PERSON_MIN_HEIGHT  — boxes shorter than this are noise. 22 px at 1080p
+#                       = ~2% of frame height — catches distant players too.
+#  PERSON_MAX_ASPECT  — width/height ratio cap. 1.10 keeps running / diving /
+#                       falling poses while still rejecting horizontal blobs.
+PERSON_MIN_HEIGHT = 22    # pixels
+PERSON_MAX_ASPECT = 1.10  # w/h; reject if box is wider than this ratio
 
 # Low-light / noise-reduction — frame pre-processing
 #  CLAHE_ENABLED  — apply CLAHE contrast enhancement on the L channel (LAB)
@@ -50,8 +50,8 @@ CLAHE_GRID    = 8
 #
 #  DETECTION_MAX_AGE  — frames a confirmed detection is kept alive without a
 #    new match (brief occlusion tolerance) before it is dropped.
-DETECTION_MIN_HITS = 3
-DETECTION_MAX_AGE  = 4
+DETECTION_MIN_HITS = 2
+DETECTION_MAX_AGE  = 8
 
 
 # ===================== TRACKING SETTINGS (ORDERED) =====================
