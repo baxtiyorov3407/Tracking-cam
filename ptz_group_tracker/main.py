@@ -39,58 +39,6 @@ from ptz_controller  import PTZController
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Court region-of-interest
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _load_court_polygon():
-    """Load the manually-calibrated court polygon if present.
-
-    Returns
-    -------
-    (np.ndarray of shape (N,1,2) int32, np.ndarray of shape (N,2) int32) or
-    (None, None) when calibration is missing / disabled.
-    """
-    import json
-    import numpy as np
-    from config import COURT_FILE, COURT_FILTER_ENABLED
-    if not COURT_FILTER_ENABLED:
-        return None, None
-    if not COURT_FILE.exists():
-        log.info("No court calibration found at %s — court filter OFF. "
-                 "Run calibrate_court.py to enable.", COURT_FILE)
-        return None, None
-    try:
-        data = json.loads(COURT_FILE.read_text())
-        pts  = np.array(data["polygon"], dtype=np.int32)
-        if pts.ndim != 2 or pts.shape[0] < 3 or pts.shape[1] != 2:
-            log.warning("court.json has invalid polygon shape; filter OFF")
-            return None, None
-        log.info("Court polygon loaded: %d points from %s",
-                 len(pts), COURT_FILE.name)
-        return pts.reshape(-1, 1, 2), pts
-    except Exception as e:
-        log.warning("Failed to read court.json (%s) — filter OFF", e)
-        return None, None
-
-
-def _filter_persons_by_court(persons, poly_cv, pad_px):
-    """Keep only persons whose foot point lies inside the court polygon
-    (with `pad_px` pixels of slack for sideline players)."""
-    if poly_cv is None or not persons:
-        return persons
-    kept = []
-    for p in persons:
-        foot_x = (p[0] + p[2]) * 0.5
-        foot_y = p[3]
-        # cv2.pointPolygonTest with measureDist=True returns signed pixel
-        # distance: positive inside, negative outside, 0 on the edge.
-        d = cv2.pointPolygonTest(poly_cv, (float(foot_x), float(foot_y)), True)
-        if d >= -pad_px:
-            kept.append(p)
-    return kept
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 #  RTSP stream — tight-loop background thread, always stores the LATEST frame
 #  (same pattern as the fast reference implementation)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -193,9 +141,6 @@ def main():
     tracker = Tracker()
     ptz     = PTZController()
 
-    court_poly_cv, court_poly_xy = _load_court_polygon()
-    from config import COURT_PADDING_PX, COURT_DRAW_OVERLAY
-
     if ENABLE_PTZ:
         log.info("Connecting ONVIF …")
         if ptz.connect():
@@ -230,11 +175,6 @@ def main():
         persons = det.detect(frame)
         infer_ms = (time.perf_counter() - t_det) * 1000.0
 
-        # Court ROI filter — drop persons whose feet are outside the court
-        n_raw = len(persons)
-        persons = _filter_persons_by_court(persons, court_poly_cv, COURT_PADDING_PX)
-        n_off  = n_raw - len(persons)
-
         # Track
         pan_vel, tilt_vel, box, state, dbg = tracker.update(persons, w, h)
 
@@ -248,11 +188,6 @@ def main():
         # Display
         if SHOW_WINDOW:
             vis = frame.copy()
-
-            # Court polygon overlay (subtle cyan outline)
-            if court_poly_xy is not None and COURT_DRAW_OVERLAY:
-                cv2.polylines(vis, [court_poly_xy], isClosed=True,
-                              color=(255, 200, 0), thickness=1, lineType=cv2.LINE_AA)
 
             # Draw persons — bright green = in-action, dim green = peripheral
             action_mask = dbg.get("action_mask", [])
@@ -289,9 +224,8 @@ def main():
                         (10, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.90, col, 2, cv2.LINE_AA)
             n_act  = dbg.get("n_action", 0)
             speed  = dbg.get("speed_norm", 0.0)
-            court_tag = f"  OFF:{n_off}" if court_poly_cv is not None else ""
             cv2.putText(vis,
-                        f"People:{len(persons)}  Action:{n_act}  Spd:{speed:.2f}{court_tag}",
+                        f"People:{len(persons)}  Action:{n_act}  Spd:{speed:.2f}",
                         (10, 86), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (200,200,200), 1, cv2.LINE_AA)
             if pan_vel is not None:
                 cv2.putText(vis, f"pan={pan_vel:+.2f}  tilt={tilt_vel:+.2f}",

@@ -147,21 +147,6 @@ CLOSE_MAX_VEL       = 0.18   # Tilt speed cap when close
 # --- Misc ---
 COAST_SEC  = 3    # Keep moving N seconds after target disappears off screen (searching)
 
-# ===================== COURT REGION-OF-INTEREST (v1, image-pixel) =====================
-# Manual court calibration (see calibrate_court.py). When a court.json file
-# exists in this folder it is loaded at startup and detections whose foot
-# point falls outside the polygon are discarded. This stops the tracker from
-# locking onto fans, passers-by, or anyone off the court.
-#
-# v1 LIMITATION — only usable when the camera can see the WHOLE court in one
-# frame at its tracking pose. If the FOV is narrower than the court (typical
-# outdoor setup), use PTZ position limits instead (see below) — that is the
-# default for this project.
-COURT_FILE            = Path(__file__).resolve().parent / "court.json"
-COURT_FILTER_ENABLED  = False        # off by default; switch on if your venue fits
-COURT_PADDING_PX      = 40
-COURT_DRAW_OVERLAY    = True
-
 
 # ===================== PTZ POSITION LIMITS (recommended) =====================
 # Calibrate once with calibrate_ptz_limits.py: drive the camera with WASD/QE
